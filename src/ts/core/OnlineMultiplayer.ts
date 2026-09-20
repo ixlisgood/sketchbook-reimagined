@@ -174,8 +174,8 @@ export class OnlineMultiplayer
 
 	private publishBodyguards(): void
 	{
-		if (this.bodyguardsRef === undefined || !this.isModerator) return;
-		if (!this.bodyguardsEnabled || this.bodyguards.length === 0)
+		if (this.bodyguardsRef === undefined) return;
+		if (!this.isModerator || !this.bodyguardsEnabled || this.bodyguards.length === 0)
 		{
 			this.bodyguardsRef.set(null).catch(() => undefined);
 			return;
@@ -189,7 +189,7 @@ export class OnlineMultiplayer
 			qz: guard.quaternion.z,
 			qw: guard.quaternion.w
 		}));
-		this.bodyguardsRef.set(payload).catch(() => undefined);
+		this.bodyguardsRef.set(payload).catch((err) => console.error('bodyguard sync failed', err));
 	}
 
 	private syncRemoteBodyguards(all: { [ownerId: string]: any }): void
@@ -250,6 +250,7 @@ export class OnlineMultiplayer
 				if (colliders[i] !== undefined)
 				{
 					colliders[i].position.set(guard.position.x, guard.position.y + 0.5, guard.position.z);
+					this.separateLocalFromPoint(guard.position.x, guard.position.z, 0.9);
 				}
 			});
 
@@ -461,30 +462,56 @@ export class OnlineMultiplayer
 		{
 			remote.vehicleId = vehicleId;
 			remote.vehicle = existing.vehicle;
+			remote.vehicleCollision = existing.collision;
 			this.attachRemoteCharacter(remote, seatName);
-			existing.vehicle.position.lerp(position, 0.35);
-			existing.vehicle.quaternion.slerp(quaternion, 0.35);
+			existing.vehicle.position.lerp(position, 0.4);
+			existing.vehicle.quaternion.slerp(quaternion, 0.4);
+			existing.vehicle.visible = true;
+			// Keep collider locked to the car so bodyguards / local player hit it
+			existing.collision.position.set(existing.vehicle.position.x, existing.vehicle.position.y + 0.4, existing.vehicle.position.z);
+			existing.collision.quaternion.set(
+				existing.vehicle.quaternion.x,
+				existing.vehicle.quaternion.y,
+				existing.vehicle.quaternion.z,
+				existing.vehicle.quaternion.w
+			);
 			return;
 		}
 
 		if (remote.vehicle === undefined || remote.vehicle.userData.vehicleType !== vehicleType)
 		{
 			this.removeRemoteVehicle(remote);
-			const assetType = vehicleType === 'pickup' ? 'car' : vehicleType;
+			const assetType = vehicleType === 'pickup' ? 'car' : (vehicleType === 'heli' ? 'heli' : vehicleType);
 			this.loadingManager.loadGLTF('build/assets/' + assetType + '.glb', (model) =>
 			{
-				if (this.remoteVehicles[vehicleId] !== undefined) return;
+				if (this.remoteVehicles[vehicleId] !== undefined)
+				{
+					remote.vehicle = this.remoteVehicles[vehicleId].vehicle;
+					remote.vehicleId = vehicleId;
+					remote.vehicleCollision = this.remoteVehicles[vehicleId].collision;
+					this.attachRemoteCharacter(remote, seatName);
+					return;
+				}
 				const vehicle = this.createVehicleVisual(vehicleType, model);
 				vehicle.userData.vehicleType = vehicleType;
 				vehicle.position.copy(position);
 				vehicle.quaternion.copy(quaternion);
+				vehicle.visible = true;
 				this.world.graphicsWorld.add(vehicle);
-				remote.vehicle = vehicle;
-				this.attachRemoteCharacter(remote);
+
 				const collision = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
-				collision.addShape(new CANNON.Box(new CANNON.Vec3(1.2, 0.6, 2.2)));
+				const shape = new CANNON.Box(new CANNON.Vec3(1.4, 0.7, 2.5));
+				collision.addShape(shape);
+				collision.collisionFilterGroup = 1;
+				collision.collisionFilterMask = -1;
+				shape.collisionFilterGroup = 1;
+				shape.collisionFilterMask = -1;
+				collision.position.set(position.x, position.y + 0.4, position.z);
+				collision.quaternion.set(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
 				this.world.physicsWorld.addBody(collision);
+
 				this.remoteVehicles[vehicleId] = { vehicle, collision };
+				remote.vehicle = vehicle;
 				remote.vehicleId = vehicleId;
 				remote.vehicleCollision = collision;
 				this.attachRemoteCharacter(remote, seatName);
@@ -492,11 +519,12 @@ export class OnlineMultiplayer
 			return;
 		}
 
-		remote.vehicle.position.lerp(position, 0.35);
-		remote.vehicle.quaternion.slerp(quaternion, 0.35);
+		remote.vehicle.position.lerp(position, 0.4);
+		remote.vehicle.quaternion.slerp(quaternion, 0.4);
+		remote.vehicle.visible = true;
 		if (remote.vehicleCollision !== undefined)
 		{
-			remote.vehicleCollision.position.set(remote.vehicle.position.x, remote.vehicle.position.y, remote.vehicle.position.z);
+			remote.vehicleCollision.position.set(remote.vehicle.position.x, remote.vehicle.position.y + 0.4, remote.vehicle.position.z);
 			remote.vehicleCollision.quaternion.set(remote.vehicle.quaternion.x, remote.vehicle.quaternion.y, remote.vehicle.quaternion.z, remote.vehicle.quaternion.w);
 		}
 	}
@@ -1002,6 +1030,18 @@ export class OnlineMultiplayer
 				guard.userData.bodyguardMarker = target;
 				guard.setBehaviour(new FollowTarget(target, 1.0));
 				this.world.add(guard);
+				// Collide with cars and players
+				if (guard.characterCapsule !== undefined)
+				{
+					const b = guard.characterCapsule.body;
+					b.collisionFilterGroup = 1;
+					b.collisionFilterMask = -1;
+					b.shapes.forEach((shape: any) =>
+					{
+						shape.collisionFilterGroup = 1;
+						shape.collisionFilterMask = -1;
+					});
+				}
 				this.bodyguards.push(guard);
 			});
 		}
@@ -1061,5 +1101,8 @@ export class OnlineMultiplayer
 				guard.setAnimation('idle', 0.1);
 			}
 		});
+
+		// Sync so other players can see bodyguards
+		this.publishBodyguards();
 	}
 }
