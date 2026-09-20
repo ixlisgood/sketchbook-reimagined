@@ -99,12 +99,6 @@ export class OnlineMultiplayer
 	private remoteBodyguards: { [ownerId: string]: Character[] } = {};
 	private remoteBodyguardCollisions: { [ownerId: string]: CANNON.Body[] } = {};
 	private isInvisible: boolean = false;
-	private secretRoom: THREE.Group | null = null;
-	// Eastern watch tower top — MUST stay above sea-level death barrier (y < 14.989)
-	private secretPortalPos: THREE.Vector3 = new THREE.Vector3(134.6, 97.5, -136.0);
-	private secretRoomPos: THREE.Vector3 = new THREE.Vector3(148.0, 97.5, -136.0);
-	private inSecretRoom: boolean = false;
-	private portalCooldown: number = 0;
 
 	constructor(world: World, loadingManager: LoadingManager)
 	{
@@ -135,7 +129,6 @@ export class OnlineMultiplayer
 	{
 		this.updateTargetCursor();
 		this.updateBodyguards(timeStep);
-		this.updateSecretPortal(timeStep);
 		if (this.localCharacter === undefined || this.playerRef === undefined) return;
 
 		const now = Date.now();
@@ -376,26 +369,48 @@ export class OnlineMultiplayer
 	private createRemotePlayerCollision(): CANNON.Body
 	{
 		const body = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
-		body.addShape(new CANNON.Sphere(0.45));
-		body.collisionFilterGroup = 2; // Characters
-		body.collisionFilterMask = ~4; // collide with default (cars) and characters, not trimesh
+		const shape = new CANNON.Sphere(0.55);
+		body.addShape(shape);
+		// Same group as vehicles so cars definitely collide
+		body.collisionFilterGroup = 1;
+		body.collisionFilterMask = -1;
+		shape.collisionFilterGroup = 1;
+		shape.collisionFilterMask = -1;
 		this.world.physicsWorld.addBody(body);
 		return body;
 	}
 
 	private syncRemotePlayerCollision(remote: RemotePlayer, position: THREE.Vector3, invisible: boolean): void
 	{
-		if (invisible)
-		{
-			// Invisible players still collide (optional: remove body to phase through)
-			// Keep collision so cars still hit them
-		}
 		if (remote.playerCollision === undefined)
 		{
 			remote.playerCollision = this.createRemotePlayerCollision();
 		}
-		remote.playerCollision.position.set(position.x, position.y + 0.5, position.z);
+		remote.playerCollision.position.set(position.x, position.y + 0.55, position.z);
 		remote.playerCollision.velocity.setZero();
+		// Arcade controller ignores most physics hits — push local player out of remote bodies
+		this.separateLocalFromPoint(position.x, position.z, 0.95);
+	}
+
+	private separateLocalFromPoint(x: number, z: number, radius: number): void
+	{
+		if (this.localCharacter === undefined || this.localCharacter.characterCapsule === undefined) return;
+		const body = this.localCharacter.characterCapsule.body;
+		const dx = body.position.x - x;
+		const dz = body.position.z - z;
+		const dist = Math.sqrt(dx * dx + dz * dz);
+		if (dist < radius && dist > 0.001)
+		{
+			const push = (radius - dist) * 0.7;
+			const nx = dx / dist;
+			const nz = dz / dist;
+			body.position.x += nx * push;
+			body.position.z += nz * push;
+			body.interpolatedPosition.x = body.position.x;
+			body.interpolatedPosition.z = body.position.z;
+			this.localCharacter.position.x = body.position.x;
+			this.localCharacter.position.z = body.position.z;
+		}
 	}
 
 	private removeRemotePlayerCollision(remote: RemotePlayer): void
@@ -617,7 +632,6 @@ export class OnlineMultiplayer
 			'<button id="mod-freeze">Freeze everyone</button>' +
 			'<button id="mod-slow">Slow everyone</button>' +
 			'<button id="mod-kickvehicles">Kick all from vehicles</button>' +
-			'<button id="mod-sky">Teleport to secret entrance</button>' +
 			'<button id="mod-clone">Clone (G)</button>' +
 			'<button id="mod-switchclone">Switch clone (Shift+G)</button>' +
 			'<button id="mod-clearclones">Clear clones (P)</button>' +
@@ -698,20 +712,6 @@ export class OnlineMultiplayer
 					at: firebase.database.ServerValue.TIMESTAMP
 				});
 			});
-		});
-		bind('mod-sky', () =>
-		{
-			if (this.localCharacter === undefined) return;
-			const p = this.secretPortalPos;
-			const body = this.localCharacter.characterCapsule?.body;
-			if (body !== undefined)
-			{
-				body.position.set(p.x, p.y + 2, p.z - 3);
-				body.interpolatedPosition.set(p.x, p.y + 2, p.z - 3);
-				body.velocity.set(0, 0, 0);
-			}
-			this.localCharacter.position.set(p.x, p.y + 2, p.z - 3);
-			this.setupSecretRoom();
 		});
 		bind('mod-clone', () => this.spawnModeratorClone());
 		bind('mod-switchclone', () => this.switchModeratorClone());
@@ -854,11 +854,7 @@ export class OnlineMultiplayer
 		this.lobbyMenu.style.display = 'none';
 		this.moderatorMenu.style.display = this.isModerator ? 'block' : 'none';
 		this.centerCursor.style.display = this.isModerator ? 'block' : 'none';
-		if (this.isModerator)
-		{
-			this.bindModeratorCloneKeys();
-			this.setupSecretRoom();
-		}
+		if (this.isModerator) this.bindModeratorCloneKeys();
 	}
 
 	private bindModeratorCloneKeys(): void
@@ -987,7 +983,7 @@ export class OnlineMultiplayer
 			{
 				if (!this.bodyguardsEnabled) return;
 				const guard = new Character(model);
-				// Real physics AI — collisions + gravity (same as map citizens)
+				// Physics AI like map citizens — walk/run with collisions + gravity
 				guard.setModeratorSkin(true);
 				guard.setPlayerName('Bodyguard');
 				guard.setPlayerColor('#1a1a2e');
@@ -999,15 +995,15 @@ export class OnlineMultiplayer
 				);
 				guard.setBehaviour(new FollowTarget(marker, 1.1));
 				this.world.add(guard);
-				// Ensure cars (Default group) collide with bodyguards (Characters group)
 				if (guard.characterCapsule !== undefined)
 				{
-					guard.characterCapsule.body.collisionFilterGroup = 2;
-					guard.characterCapsule.body.collisionFilterMask = ~4;
-					guard.characterCapsule.body.shapes.forEach((shape: any) =>
+					const b = guard.characterCapsule.body;
+					b.collisionFilterGroup = 1;
+					b.collisionFilterMask = -1;
+					b.shapes.forEach((shape: any) =>
 					{
-						shape.collisionFilterGroup = 2;
-						shape.collisionFilterMask = ~4;
+						shape.collisionFilterGroup = 1;
+						shape.collisionFilterMask = -1;
 					});
 				}
 				this.bodyguards.push(guard);
@@ -1031,8 +1027,9 @@ export class OnlineMultiplayer
 		const radius = 1.85;
 		const center = this.localCharacter.position;
 		const n = this.bodyguardMarkers.length;
+		const flying = this.localCharacter.isFlying === true;
 
-		// Move follow targets into a circle around the moderator; AI walks there with physics
+		// Circle slots follow the moderator (including height)
 		this.bodyguardMarkers.forEach((marker, i) =>
 		{
 			const angle = (i / n) * Math.PI * 2;
@@ -1042,164 +1039,34 @@ export class OnlineMultiplayer
 				center.z + Math.sin(angle) * radius
 			);
 		});
-	}
 
-	private setupSecretRoom(): void
-	{
-		if (this.secretRoom !== null) return;
-
-		const room = new THREE.Group();
-		room.position.copy(this.secretRoomPos);
-
-		const floorMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.8 });
-		const wallMat = new THREE.MeshStandardMaterial({ color: 0x0d1117, roughness: 0.9 });
-		const accentMat = new THREE.MeshStandardMaterial({
-			color: 0x168cff,
-			emissive: 0x168cff,
-			emissiveIntensity: 0.4
-		});
-
-		const floor = new THREE.Mesh(new THREE.BoxGeometry(24, 0.4, 24), floorMat);
-		floor.position.y = 0;
-		room.add(floor);
-
-		const ceiling = new THREE.Mesh(new THREE.BoxGeometry(24, 0.3, 24), wallMat);
-		ceiling.position.y = 6;
-		room.add(ceiling);
-
-		const wallH = 6;
-		const wallT = 0.4;
-		const walls = [
-			{ x: 0, z: -12, w: 24, d: wallT },
-			{ x: 0, z: 12, w: 24, d: wallT },
-			{ x: -12, z: 0, w: wallT, d: 24 },
-			{ x: 12, z: 0, w: wallT, d: 24 }
-		];
-		walls.forEach((w) =>
+		this.bodyguards.forEach((guard, i) =>
 		{
-			const mesh = new THREE.Mesh(new THREE.BoxGeometry(w.w, wallH, w.d), wallMat);
-			mesh.position.set(w.x, wallH / 2, w.z);
-			room.add(mesh);
-		});
+			const marker = this.bodyguardMarkers[i];
+			if (marker === undefined) return;
 
-		// Accent pillars
-		for (let i = 0; i < 4; i++)
-		{
-			const a = (i / 4) * Math.PI * 2;
-			const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.6, 5.5, 0.6), accentMat);
-			pillar.position.set(Math.cos(a) * 8, 2.75, Math.sin(a) * 8);
-			room.add(pillar);
-		}
+			guard.isFlying = flying;
 
-		// Exit pad (walk here to leave)
-		const exitPad = new THREE.Mesh(
-			new THREE.CylinderGeometry(1.5, 1.5, 0.15, 16),
-			accentMat
-		);
-		exitPad.position.set(0, 0.15, 0);
-		exitPad.name = 'secretExit';
-		room.add(exitPad);
-
-		this.world.graphicsWorld.add(room);
-		room.visible = false; // invisible from outside — only shown while inside
-		this.secretRoom = room;
-
-		// Physics floor so you don't fall through the secret room
-		const floorBody = new CANNON.Body({ mass: 0 });
-		floorBody.addShape(new CANNON.Box(new CANNON.Vec3(12, 0.2, 12)));
-		floorBody.position.set(this.secretRoomPos.x, this.secretRoomPos.y, this.secretRoomPos.z);
-		this.world.physicsWorld.addBody(floorBody);
-
-		// Visible portal marker on the eastern watch tower top
-		const portal = new THREE.Mesh(
-			new THREE.BoxGeometry(2.2, 3.2, 0.4),
-			new THREE.MeshStandardMaterial({
-				color: 0x168cff,
-				emissive: 0x168cff,
-				emissiveIntensity: 0.6,
-				transparent: true,
-				opacity: 0.55
-			})
-		);
-		portal.position.set(this.secretPortalPos.x, this.secretPortalPos.y + 1.6, this.secretPortalPos.z);
-		portal.name = 'secretPortal';
-		this.world.graphicsWorld.add(portal);
-
-		const portalBody = new CANNON.Body({ mass: 0 });
-		portalBody.addShape(new CANNON.Box(new CANNON.Vec3(1.1, 1.6, 0.2)));
-		portalBody.position.set(this.secretPortalPos.x, this.secretPortalPos.y + 1.6, this.secretPortalPos.z);
-		this.world.physicsWorld.addBody(portalBody);
-	}
-
-	private updateSecretPortal(timeStep: number): void
-	{
-		if (!this.isModerator || this.localCharacter === undefined) return;
-		this.portalCooldown = Math.max(0, this.portalCooldown - timeStep);
-		if (this.portalCooldown > 0) return;
-
-		const pos = this.localCharacter.position;
-
-		if (!this.inSecretRoom)
-		{
-			// Run into the portal / side wall marker to enter
-			const dx = pos.x - this.secretPortalPos.x;
-			const dz = pos.z - this.secretPortalPos.z;
-			const dist = Math.sqrt(dx * dx + dz * dz);
-			if (dist < 3.0 && Math.abs(pos.y - this.secretPortalPos.y) < 5)
+			if (flying && guard.characterCapsule !== undefined)
 			{
-				this.teleportToSecretRoom();
+				// Same flight as you: no gravity fling — hold formation in the air
+				const body = guard.characterCapsule.body;
+				const t = marker.position;
+				body.velocity.set(0, 0, 0);
+				body.angularVelocity.set(0, 0, 0);
+				body.force.set(0, 0, 0);
+				body.position.set(t.x, t.y, t.z);
+				body.interpolatedPosition.set(t.x, t.y, t.z);
+				guard.position.set(t.x, t.y, t.z);
+				// Pause walk AI while airborne
+				guard.triggerAction('up', false);
+				guard.setAnimation('idle', 0.1);
 			}
-		}
-		else
-		{
-			// Stand on center pad to exit
-			const room = this.secretRoomPos;
-			const dx = pos.x - room.x;
-			const dz = pos.z - room.z;
-			const dist = Math.sqrt(dx * dx + dz * dz);
-			if (dist < 1.8 && Math.abs(pos.y - room.y) < 3)
+			else
 			{
-				this.teleportFromSecretRoom();
+				// Ground: FollowTarget physics AI walks them into the circle
+				this.separateLocalFromPoint(guard.position.x, guard.position.z, 0.85);
 			}
-		}
-	}
-
-	private teleportToSecretRoom(): void
-	{
-		if (this.localCharacter === undefined) return;
-		this.setupSecretRoom();
-		this.inSecretRoom = true;
-		if (this.secretRoom !== null) this.secretRoom.visible = true;
-		this.portalCooldown = 1.5;
-		const p = this.secretRoomPos;
-		// Stand on the room floor (y≈97.5) — above death barrier (y < 15)
-		const standY = p.y + 2.0;
-		const body = this.localCharacter.characterCapsule?.body;
-		if (body !== undefined)
-		{
-			body.position.set(p.x, standY, p.z);
-			body.interpolatedPosition.set(p.x, standY, p.z);
-			body.velocity.set(0, 0, 0);
-			body.angularVelocity.set(0, 0, 0);
-		}
-		this.localCharacter.position.set(p.x, standY, p.z);
-		this.localCharacter.isFlying = false;
-	}
-
-	private teleportFromSecretRoom(): void
-	{
-		if (this.localCharacter === undefined) return;
-		this.inSecretRoom = false;
-		if (this.secretRoom !== null) this.secretRoom.visible = false;
-		this.portalCooldown = 1.5;
-		const p = this.secretPortalPos;
-		const body = this.localCharacter.characterCapsule?.body;
-		if (body !== undefined)
-		{
-			body.position.set(p.x, p.y + 2, p.z - 3);
-			body.interpolatedPosition.set(p.x, p.y + 2, p.z - 3);
-			body.velocity.set(0, 0, 0);
-		}
-		this.localCharacter.position.set(p.x, p.y + 2, p.z - 3);
+		});
 	}
 }
