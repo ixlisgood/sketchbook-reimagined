@@ -999,6 +999,7 @@ export class OnlineMultiplayer
 
 				const target = this.bodyguardMarkers[index];
 				if (target === undefined) return;
+				guard.userData.bodyguardMarker = target;
 				guard.setBehaviour(new FollowTarget(target, 1.0));
 				this.world.add(guard);
 				this.bodyguards.push(guard);
@@ -1019,12 +1020,13 @@ export class OnlineMultiplayer
 		if (!this.bodyguardsEnabled || this.localCharacter === undefined) return;
 		if (this.bodyguardMarkers.length === 0) return;
 
-		// Keep circle slots around the moderator so AI forms a ring
+		// Keep circle slots around the moderator (height follows when you fly)
 		const radius = 2.8;
 		const cx = this.localCharacter.position.x;
 		const cy = this.localCharacter.position.y;
 		const cz = this.localCharacter.position.z;
 		const n = this.bodyguardMarkers.length;
+		const flying = this.localCharacter.isFlying === true;
 
 		this.bodyguardMarkers.forEach((marker, i) =>
 		{
@@ -1038,7 +1040,26 @@ export class OnlineMultiplayer
 
 		this.bodyguards.forEach((guard) =>
 		{
-			guard.isFlying = false;
+			guard.isFlying = flying;
+			const marker = guard.userData.bodyguardMarker as THREE.Object3D;
+
+			if (flying && guard.characterCapsule !== undefined && marker !== undefined)
+			{
+				// Fly with you in formation — smooth follow, no gravity fling
+				const body = guard.characterCapsule.body;
+				const t = marker.position;
+				const blend = Math.min(1, 12 * timeStep);
+				body.position.x += (t.x - body.position.x) * blend;
+				body.position.y += (t.y - body.position.y) * blend;
+				body.position.z += (t.z - body.position.z) * blend;
+				body.interpolatedPosition.copy(body.position);
+				body.velocity.set(0, 0, 0);
+				body.angularVelocity.set(0, 0, 0);
+				body.force.set(0, 0, 0);
+				guard.position.set(body.position.x, body.position.y, body.position.z);
+				guard.triggerAction('up', false);
+				guard.setAnimation('idle', 0.1);
+			}
 		});
 	}
 }
