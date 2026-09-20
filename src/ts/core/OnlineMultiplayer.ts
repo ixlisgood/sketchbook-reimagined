@@ -965,28 +965,41 @@ export class OnlineMultiplayer
 		if (this.localCharacter === undefined) return;
 
 		const origin = this.localCharacter.position.clone();
+		const radius = 2.8;
 
 		for (let i = 0; i < count; i++)
 		{
+			// Each guard gets a fixed angle on the circle
+			const angle = (i / count) * Math.PI * 2;
+			const marker = new THREE.Object3D();
+			marker.position.set(
+				origin.x + Math.cos(angle) * radius,
+				origin.y,
+				origin.z + Math.sin(angle) * radius
+			);
+			this.world.graphicsWorld.add(marker);
+			this.bodyguardMarkers.push(marker);
+
+			const index = i;
 			this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
 			{
 				if (!this.bodyguardsEnabled || this.localCharacter === undefined) return;
 
 				const guard = new Character(model);
-				// Same as map citizens: physics + AI walk, no formation / fly hacks
 				guard.setModeratorSkin(true);
 				guard.setPlayerName('Bodyguard');
 				guard.setPlayerColor('#1a1a2e');
 
-				const spread = 3.5;
+				// Spawn near the player; they walk out to their circle slot
 				guard.setPosition(
-					origin.x + (Math.random() - 0.5) * spread,
+					origin.x + (Math.random() - 0.5) * 1.5,
 					origin.y + 0.5,
-					origin.z + (Math.random() - 0.5) * spread
+					origin.z + (Math.random() - 0.5) * 1.5
 				);
 
-				// Follow moderator with normal AI stop distance (like following a player)
-				guard.setBehaviour(new FollowTarget(this.localCharacter, 2.8));
+				const target = this.bodyguardMarkers[index];
+				if (target === undefined) return;
+				guard.setBehaviour(new FollowTarget(target, 1.0));
 				this.world.add(guard);
 				this.bodyguards.push(guard);
 			});
@@ -1003,15 +1016,29 @@ export class OnlineMultiplayer
 
 	private updateBodyguards(timeStep: number): void
 	{
-		// Let Character.behaviour (FollowTarget) run like map NPCs — do not force positions
 		if (!this.bodyguardsEnabled || this.localCharacter === undefined) return;
+		if (this.bodyguardMarkers.length === 0) return;
+
+		// Keep circle slots around the moderator so AI forms a ring
+		const radius = 2.8;
+		const cx = this.localCharacter.position.x;
+		const cy = this.localCharacter.position.y;
+		const cz = this.localCharacter.position.z;
+		const n = this.bodyguardMarkers.length;
+
+		this.bodyguardMarkers.forEach((marker, i) =>
+		{
+			const angle = (i / n) * Math.PI * 2;
+			marker.position.set(
+				cx + Math.cos(angle) * radius,
+				cy,
+				cz + Math.sin(angle) * radius
+			);
+		});
+
 		this.bodyguards.forEach((guard) =>
 		{
-			guard.isFlying = false; // never fly — map AIs stay grounded
-			if (guard.behaviour && typeof (guard.behaviour as FollowTarget).setTarget === 'function')
-			{
-				(guard.behaviour as FollowTarget).setTarget(this.localCharacter);
-			}
+			guard.isFlying = false;
 		});
 	}
 }
