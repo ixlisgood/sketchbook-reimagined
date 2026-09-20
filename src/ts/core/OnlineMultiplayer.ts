@@ -93,6 +93,9 @@ export class OnlineMultiplayer
 	private bodyguards: Character[] = [];
 	private bodyguardMarkers: THREE.Object3D[] = [];
 	private bodyguardsEnabled: boolean = false;
+	private bodyguardsRef: any;
+	private remoteBodyguards: { [ownerId: string]: Character[] } = {};
+	private isInvisible: boolean = false;
 	private secretRoom: THREE.Group | null = null;
 	private secretPortalPos: THREE.Vector3 = new THREE.Vector3(12, 0.5, -28);
 	private secretRoomPos: THREE.Vector3 = new THREE.Vector3(0, -80, 0);
@@ -166,9 +169,94 @@ export class OnlineMultiplayer
 		state.frozen = this.freezeEveryone && !this.isModerator;
 		state.flying = this.localCharacter.isFlying;
 		state.speedBoost = this.localCharacter.moveSpeed > 4;
-		state.invisible = this.localCharacter.visible === false;
+		state.invisible = this.isInvisible;
 
 		this.playerRef.set(state).catch((error) => console.error('Online multiplayer update failed', error));
+		this.publishBodyguards();
+	}
+
+	private publishBodyguards(): void
+	{
+		if (this.bodyguardsRef === undefined || !this.isModerator) return;
+		if (!this.bodyguardsEnabled || this.bodyguards.length === 0)
+		{
+			this.bodyguardsRef.set(null).catch(() => undefined);
+			return;
+		}
+		const payload = this.bodyguards.map((guard) => ({
+			x: guard.position.x,
+			y: guard.position.y,
+			z: guard.position.z,
+			qx: guard.quaternion.x,
+			qy: guard.quaternion.y,
+			qz: guard.quaternion.z,
+			qw: guard.quaternion.w
+		}));
+		this.bodyguardsRef.set(payload).catch(() => undefined);
+	}
+
+	private syncRemoteBodyguards(all: { [ownerId: string]: any }): void
+	{
+		const activeOwners: { [id: string]: boolean } = {};
+		Object.keys(all || {}).forEach((ownerId) =>
+		{
+			if (ownerId === this.playerId) return;
+			const list = all[ownerId];
+			if (!list || !Array.isArray(list) || list.length === 0) return;
+			activeOwners[ownerId] = true;
+
+			if (this.remoteBodyguards[ownerId] === undefined)
+			{
+				this.remoteBodyguards[ownerId] = [];
+			}
+			const guards = this.remoteBodyguards[ownerId];
+
+			list.forEach((state: any, i: number) =>
+			{
+				if (typeof state.x !== 'number') return;
+				if (guards[i] === undefined)
+				{
+					this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
+					{
+						if (this.remoteBodyguards[ownerId] === undefined) this.remoteBodyguards[ownerId] = [];
+						if (this.remoteBodyguards[ownerId][i] !== undefined) return;
+						const guard = new Character(model);
+						guard.isRemote = true;
+						guard.setPhysicsEnabled(false);
+						guard.setModeratorSkin(true);
+						guard.setPlayerName('Bodyguard');
+						guard.setPlayerColor('#1a1a2e');
+						guard.position.set(state.x, state.y, state.z);
+						this.world.add(guard);
+						this.remoteBodyguards[ownerId][i] = guard;
+					});
+					return;
+				}
+				const guard = guards[i];
+				guard.position.lerp(new THREE.Vector3(state.x, state.y, state.z), 0.35);
+				if (typeof state.qx === 'number')
+				{
+					guard.quaternion.slerp(
+						new THREE.Quaternion(state.qx, state.qy, state.qz, state.qw),
+						0.35
+					);
+				}
+			});
+
+			// Remove excess
+			while (guards.length > list.length)
+			{
+				const g = guards.pop();
+				if (g !== undefined) this.world.remove(g);
+			}
+		});
+
+		Object.keys(this.remoteBodyguards).forEach((ownerId) =>
+		{
+			if (activeOwners[ownerId]) return;
+			(this.remoteBodyguards[ownerId] || []).forEach((g) => this.world.remove(g));
+			delete this.remoteBodyguards[ownerId];
+		});
 	}
 
 	private updateRemotePlayers(players: { [id: string]: OnlinePlayerState }): void
@@ -204,7 +292,9 @@ export class OnlineMultiplayer
 			remote.character.setModeratorSkin(isRemoteMod);
 			remote.character.isFlying = state.flying === true;
 			remote.character.moveSpeed = state.speedBoost === true ? 12 : 4;
-			remote.character.visible = state.invisible !== true;
+			const inv = state.invisible === true;
+			remote.character.visible = !inv;
+			remote.character.traverse((child: any) => { if (child.isSprite) child.visible = !inv; });
 			if (state.kickAt !== undefined && state.kickAt > (remote.lastKickAt || 0))
 			{
 				remote.lastKickAt = state.kickAt;
@@ -455,7 +545,7 @@ export class OnlineMultiplayer
 			'<button id="mod-freeze">Freeze everyone</button>' +
 			'<button id="mod-slow">Slow everyone</button>' +
 			'<button id="mod-kickvehicles">Kick all from vehicles</button>' +
-			'<button id="mod-sky">Teleport to sky</button>' +
+			'<button id="mod-sky">Teleport to secret entrance</button>' +
 			'<button id="mod-clone">Clone (G)</button>' +
 			'<button id="mod-switchclone">Switch clone (Shift+G)</button>' +
 			'<button id="mod-clearclones">Clear clones (P)</button>' +
@@ -517,14 +607,18 @@ export class OnlineMultiplayer
 		bind('mod-invisible', () =>
 		{
 			if (this.localCharacter === undefined) return;
-			this.localCharacter.visible = !this.localCharacter.visible;
+			this.isInvisible = !this.isInvisible;
+			this.localCharacter.visible = !this.isInvisible;
+			this.localCharacter.traverse((child: any) =>
+			{
+				if (child.isSprite) child.visible = !this.isInvisible;
+			});
 		});
 		bind('mod-kickvehicles', () =>
 		{
 			Object.keys(this.remotePlayers).forEach((id) =>
 			{
 				const remote = this.remotePlayers[id];
-				const name = remote.character.userData.playerName || remote.character.userData.playerName;
 				const target = (remote.character.userData.playerName as string) || 'Player';
 				this.commandRef?.push({
 					command: 'exitvehicle',
@@ -536,17 +630,16 @@ export class OnlineMultiplayer
 		bind('mod-sky', () =>
 		{
 			if (this.localCharacter === undefined) return;
+			const p = this.secretPortalPos;
 			const body = this.localCharacter.characterCapsule?.body;
-			const x = this.localCharacter.position.x;
-			const z = this.localCharacter.position.z;
 			if (body !== undefined)
 			{
-				body.position.set(x, 40, z);
-				body.interpolatedPosition.set(x, 40, z);
+				body.position.set(p.x, p.y + 2, p.z - 3);
+				body.interpolatedPosition.set(p.x, p.y + 2, p.z - 3);
 				body.velocity.set(0, 0, 0);
 			}
-			this.localCharacter.position.set(x, 40, z);
-			this.localCharacter.isFlying = true;
+			this.localCharacter.position.set(p.x, p.y + 2, p.z - 3);
+			this.setupSecretRoom();
 		});
 		bind('mod-clone', () => this.spawnModeratorClone());
 		bind('mod-switchclone', () => this.switchModeratorClone());
@@ -649,6 +742,9 @@ export class OnlineMultiplayer
 		this.playersRef = lobbyRef.child('players');
 		this.playerRef = this.playersRef.child(this.playerId);
 		this.playerRef.onDisconnect().remove();
+		this.bodyguardsRef = lobbyRef.child('bodyguards').child(this.playerId);
+		this.bodyguardsRef.onDisconnect().remove();
+		lobbyRef.child('bodyguards').on('value', (snapshot) => this.syncRemoteBodyguards(snapshot.val() || {}));
 		this.playersRef.on('value', (snapshot) => this.updateRemotePlayers(snapshot.val() || {}));
 		this.controlRef.on('value', (snapshot) =>
 		{
