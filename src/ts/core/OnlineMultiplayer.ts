@@ -95,6 +95,8 @@ export class OnlineMultiplayer
 	private bodyguards: Character[] = [];
 	private bodyguardMarkers: THREE.Object3D[] = [];
 	private bodyguardsEnabled: boolean = false;
+	/** Real controlled player only — never a mod clone */
+	private bodyguardHost: Character | null = null;
 	private bodyguardsRef: any;
 	private remoteBodyguards: { [ownerId: string]: Character[] } = {};
 	private remoteBodyguardCollisions: { [ownerId: string]: CANNON.Body[] } = {};
@@ -120,6 +122,7 @@ export class OnlineMultiplayer
 	public setLocalCharacter(character: Character): void
 	{
 		this.localCharacter = character;
+		this.bodyguardHost = character; // always the real you, not a clone
 		character.setPlayerColor(this.playerColor);
 		character.setPlayerName(this.playerName || 'Player');
 		if (this.isModerator) character.setModeratorSkin(true);
@@ -1057,16 +1060,17 @@ export class OnlineMultiplayer
 
 	private updateBodyguards(timeStep: number): void
 	{
-		if (!this.bodyguardsEnabled || this.localCharacter === undefined) return;
+		// Circle the real controlled character only — never a clone
+		const host = this.bodyguardHost || this.localCharacter;
+		if (!this.bodyguardsEnabled || host === undefined || host === null) return;
 		if (this.bodyguardMarkers.length === 0) return;
 
-		// Keep circle slots around the moderator (height follows when you fly)
 		const radius = 2.8;
-		const cx = this.localCharacter.position.x;
-		const cy = this.localCharacter.position.y;
-		const cz = this.localCharacter.position.z;
+		const cx = host.position.x;
+		const cy = host.position.y;
+		const cz = host.position.z;
 		const n = this.bodyguardMarkers.length;
-		const flying = this.localCharacter.isFlying === true;
+		const flying = host.isFlying === true;
 
 		this.bodyguardMarkers.forEach((marker, i) =>
 		{
