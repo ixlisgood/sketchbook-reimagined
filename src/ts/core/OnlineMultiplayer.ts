@@ -376,26 +376,48 @@ export class OnlineMultiplayer
 	private createRemotePlayerCollision(): CANNON.Body
 	{
 		const body = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
-		body.addShape(new CANNON.Sphere(0.45));
-		body.collisionFilterGroup = 2; // Characters
-		body.collisionFilterMask = ~4; // collide with default (cars) and characters, not trimesh
+		const shape = new CANNON.Sphere(0.55);
+		body.addShape(shape);
+		// Same group as vehicles so cars definitely collide
+		body.collisionFilterGroup = 1;
+		body.collisionFilterMask = -1;
+		shape.collisionFilterGroup = 1;
+		shape.collisionFilterMask = -1;
 		this.world.physicsWorld.addBody(body);
 		return body;
 	}
 
 	private syncRemotePlayerCollision(remote: RemotePlayer, position: THREE.Vector3, invisible: boolean): void
 	{
-		if (invisible)
-		{
-			// Invisible players still collide (optional: remove body to phase through)
-			// Keep collision so cars still hit them
-		}
 		if (remote.playerCollision === undefined)
 		{
 			remote.playerCollision = this.createRemotePlayerCollision();
 		}
-		remote.playerCollision.position.set(position.x, position.y + 0.5, position.z);
+		remote.playerCollision.position.set(position.x, position.y + 0.55, position.z);
 		remote.playerCollision.velocity.setZero();
+		// Arcade controller ignores most physics hits — push local player out of remote bodies
+		this.separateLocalFromPoint(position.x, position.z, 0.95);
+	}
+
+	private separateLocalFromPoint(x: number, z: number, radius: number): void
+	{
+		if (this.localCharacter === undefined || this.localCharacter.characterCapsule === undefined) return;
+		const body = this.localCharacter.characterCapsule.body;
+		const dx = body.position.x - x;
+		const dz = body.position.z - z;
+		const dist = Math.sqrt(dx * dx + dz * dz);
+		if (dist < radius && dist > 0.001)
+		{
+			const push = (radius - dist) * 0.7;
+			const nx = dx / dist;
+			const nz = dz / dist;
+			body.position.x += nx * push;
+			body.position.z += nz * push;
+			body.interpolatedPosition.x = body.position.x;
+			body.interpolatedPosition.z = body.position.z;
+			this.localCharacter.position.x = body.position.x;
+			this.localCharacter.position.z = body.position.z;
+		}
 	}
 
 	private removeRemotePlayerCollision(remote: RemotePlayer): void
@@ -1002,13 +1024,16 @@ export class OnlineMultiplayer
 				// Ensure cars (Default group) collide with bodyguards (Characters group)
 				if (guard.characterCapsule !== undefined)
 				{
-					guard.characterCapsule.body.collisionFilterGroup = 2;
-					guard.characterCapsule.body.collisionFilterMask = ~4;
-					guard.characterCapsule.body.shapes.forEach((shape: any) =>
+					const b = guard.characterCapsule.body;
+					b.collisionFilterGroup = 1;
+					b.collisionFilterMask = -1;
+					b.shapes.forEach((shape: any) =>
 					{
-						shape.collisionFilterGroup = 2;
-						shape.collisionFilterMask = ~4;
+						shape.collisionFilterGroup = 1;
+						shape.collisionFilterMask = -1;
 					});
+					b.mass = 5;
+					b.updateMassProperties();
 				}
 				this.bodyguards.push(guard);
 			});
@@ -1042,11 +1067,22 @@ export class OnlineMultiplayer
 				center.z + Math.sin(angle) * radius
 			);
 		});
+
+		// Soft collision with local player + keep bodyguards from stacking
+		this.bodyguards.forEach((guard) =>
+		{
+			this.separateLocalFromPoint(guard.position.x, guard.position.z, 0.85);
+		});
 	}
 
 	private setupSecretRoom(): void
 	{
-		if (this.secretRoom !== null) return;
+		// Always rebuild so an old underground room never sticks around
+		if (this.secretRoom !== null)
+		{
+			this.world.graphicsWorld.remove(this.secretRoom);
+			this.secretRoom = null;
+		}
 
 		const room = new THREE.Group();
 		room.position.copy(this.secretRoomPos);
@@ -1101,34 +1137,17 @@ export class OnlineMultiplayer
 		room.add(exitPad);
 
 		this.world.graphicsWorld.add(room);
-		room.visible = false; // invisible from outside — only shown while inside
+		// Fully invisible from outside — only shown while the moderator is inside
+		room.visible = false;
+		room.traverse((obj: any) => { obj.visible = false; });
 		this.secretRoom = room;
 
-		// Physics floor so you don't fall through the secret room
+		// Physics floor only (no visible geometry from outside)
 		const floorBody = new CANNON.Body({ mass: 0 });
 		floorBody.addShape(new CANNON.Box(new CANNON.Vec3(12, 0.2, 12)));
 		floorBody.position.set(this.secretRoomPos.x, this.secretRoomPos.y, this.secretRoomPos.z);
 		this.world.physicsWorld.addBody(floorBody);
-
-		// Visible portal marker on the eastern watch tower top
-		const portal = new THREE.Mesh(
-			new THREE.BoxGeometry(2.2, 3.2, 0.4),
-			new THREE.MeshStandardMaterial({
-				color: 0x168cff,
-				emissive: 0x168cff,
-				emissiveIntensity: 0.6,
-				transparent: true,
-				opacity: 0.55
-			})
-		);
-		portal.position.set(this.secretPortalPos.x, this.secretPortalPos.y + 1.6, this.secretPortalPos.z);
-		portal.name = 'secretPortal';
-		this.world.graphicsWorld.add(portal);
-
-		const portalBody = new CANNON.Body({ mass: 0 });
-		portalBody.addShape(new CANNON.Box(new CANNON.Vec3(1.1, 1.6, 0.2)));
-		portalBody.position.set(this.secretPortalPos.x, this.secretPortalPos.y + 1.6, this.secretPortalPos.z);
-		this.world.physicsWorld.addBody(portalBody);
+		// No portal mesh — entrance is mod-menu teleport only (or invisible zone)
 	}
 
 	private updateSecretPortal(timeStep: number): void
@@ -1169,7 +1188,11 @@ export class OnlineMultiplayer
 		if (this.localCharacter === undefined) return;
 		this.setupSecretRoom();
 		this.inSecretRoom = true;
-		if (this.secretRoom !== null) this.secretRoom.visible = true;
+		if (this.secretRoom !== null)
+		{
+			this.secretRoom.visible = true;
+			this.secretRoom.traverse((obj: any) => { obj.visible = true; });
+		}
 		this.portalCooldown = 1.5;
 		const p = this.secretRoomPos;
 		// Stand on the room floor (y≈97.5) — above death barrier (y < 15)
@@ -1190,7 +1213,11 @@ export class OnlineMultiplayer
 	{
 		if (this.localCharacter === undefined) return;
 		this.inSecretRoom = false;
-		if (this.secretRoom !== null) this.secretRoom.visible = false;
+		if (this.secretRoom !== null)
+		{
+			this.secretRoom.visible = false;
+			this.secretRoom.traverse((obj: any) => { obj.visible = false; });
+		}
 		this.portalCooldown = 1.5;
 		const p = this.secretPortalPos;
 		const body = this.localCharacter.characterCapsule?.body;
