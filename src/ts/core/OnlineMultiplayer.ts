@@ -44,11 +44,13 @@ interface RemotePlayer
 	vehicle?: THREE.Object3D;
 	vehicleId?: string;
 	vehicleCollision?: CANNON.Body;
+	playerCollision?: CANNON.Body;
 	animation?: string;
 	color?: string;
 	lastSeen: number;
 	lastKickAt?: number;
 	kickedVehicleId?: string;
+	invisible?: boolean;
 }
 
 interface RemoteVehicle
@@ -95,10 +97,12 @@ export class OnlineMultiplayer
 	private bodyguardsEnabled: boolean = false;
 	private bodyguardsRef: any;
 	private remoteBodyguards: { [ownerId: string]: Character[] } = {};
+	private remoteBodyguardCollisions: { [ownerId: string]: CANNON.Body[] } = {};
 	private isInvisible: boolean = false;
 	private secretRoom: THREE.Group | null = null;
-	private secretPortalPos: THREE.Vector3 = new THREE.Vector3(12, 0.5, -28);
-	private secretRoomPos: THREE.Vector3 = new THREE.Vector3(0, -80, 0);
+	// Eastern watch tower top — MUST stay above sea-level death barrier (y < 14.989)
+	private secretPortalPos: THREE.Vector3 = new THREE.Vector3(134.6, 97.5, -136.0);
+	private secretRoomPos: THREE.Vector3 = new THREE.Vector3(148.0, 97.5, -136.0);
 	private inSecretRoom: boolean = false;
 	private portalCooldown: number = 0;
 
@@ -208,8 +212,10 @@ export class OnlineMultiplayer
 			if (this.remoteBodyguards[ownerId] === undefined)
 			{
 				this.remoteBodyguards[ownerId] = [];
+				this.remoteBodyguardCollisions[ownerId] = [];
 			}
 			const guards = this.remoteBodyguards[ownerId];
+			const colliders = this.remoteBodyguardCollisions[ownerId];
 
 			list.forEach((state: any, i: number) =>
 			{
@@ -218,7 +224,11 @@ export class OnlineMultiplayer
 				{
 					this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
 					{
-						if (this.remoteBodyguards[ownerId] === undefined) this.remoteBodyguards[ownerId] = [];
+						if (this.remoteBodyguards[ownerId] === undefined)
+						{
+							this.remoteBodyguards[ownerId] = [];
+							this.remoteBodyguardCollisions[ownerId] = [];
+						}
 						if (this.remoteBodyguards[ownerId][i] !== undefined) return;
 						const guard = new Character(model);
 						guard.isRemote = true;
@@ -229,6 +239,9 @@ export class OnlineMultiplayer
 						guard.position.set(state.x, state.y, state.z);
 						this.world.add(guard);
 						this.remoteBodyguards[ownerId][i] = guard;
+						const col = this.createRemotePlayerCollision();
+						col.position.set(state.x, state.y + 0.5, state.z);
+						this.remoteBodyguardCollisions[ownerId][i] = col;
 					});
 					return;
 				}
@@ -241,13 +254,18 @@ export class OnlineMultiplayer
 						0.35
 					);
 				}
+				if (colliders[i] !== undefined)
+				{
+					colliders[i].position.set(guard.position.x, guard.position.y + 0.5, guard.position.z);
+				}
 			});
 
-			// Remove excess
 			while (guards.length > list.length)
 			{
 				const g = guards.pop();
 				if (g !== undefined) this.world.remove(g);
+				const c = colliders.pop();
+				if (c !== undefined) this.world.physicsWorld.remove(c);
 			}
 		});
 
@@ -255,7 +273,9 @@ export class OnlineMultiplayer
 		{
 			if (activeOwners[ownerId]) return;
 			(this.remoteBodyguards[ownerId] || []).forEach((g) => this.world.remove(g));
+			(this.remoteBodyguardCollisions[ownerId] || []).forEach((c) => this.world.physicsWorld.remove(c));
 			delete this.remoteBodyguards[ownerId];
+			delete this.remoteBodyguardCollisions[ownerId];
 		});
 	}
 
@@ -293,8 +313,12 @@ export class OnlineMultiplayer
 			remote.character.isFlying = state.flying === true;
 			remote.character.moveSpeed = state.speedBoost === true ? 12 : 4;
 			const inv = state.invisible === true;
+			remote.invisible = inv;
 			remote.character.visible = !inv;
-			remote.character.traverse((child: any) => { if (child.isSprite) child.visible = !inv; });
+			remote.character.traverse((child: any) =>
+			{
+				if (child.isSprite || child.isMesh) child.visible = !inv;
+			});
 			if (state.kickAt !== undefined && state.kickAt > (remote.lastKickAt || 0))
 			{
 				remote.lastKickAt = state.kickAt;
@@ -309,7 +333,7 @@ export class OnlineMultiplayer
 			const quaternion = new THREE.Quaternion(state.qx, state.qy, state.qz, state.qw);
 			if (state.vehicleType !== undefined)
 			{
-				remote.character.visible = true;
+				if (!inv) remote.character.visible = true;
 				this.setRemoteAnimation(remote, 'driving');
 				if (remote.kickedVehicleId === (state.vehicleId || id))
 				{
@@ -325,24 +349,62 @@ export class OnlineMultiplayer
 			}
 			else
 			{
-				remote.character.visible = true;
+				if (!inv) remote.character.visible = true;
+				else remote.character.visible = false;
 				this.removeRemoteVehicle(remote);
 				if (remote.character.parent !== this.world.graphicsWorld) this.world.graphicsWorld.attach(remote.character);
 				remote.character.position.lerp(position, 0.35);
 				remote.character.quaternion.slerp(quaternion, 0.35);
 				this.setRemoteAnimation(remote, state.moving === true ? 'run' : 'idle');
 			}
+			// Keep kinematic collider in sync so local player/cars bump into remotes
+			this.syncRemotePlayerCollision(remote, position, inv);
 		});
 
 		Object.keys(this.remotePlayers).forEach((id) =>
 		{
 			if (!activeIds[id] || Date.now() - this.remotePlayers[id].lastSeen > 5000)
 			{
+				this.removeRemotePlayerCollision(this.remotePlayers[id]);
 				this.world.remove(this.remotePlayers[id].character);
 				this.removeRemoteVehicle(this.remotePlayers[id]);
 				delete this.remotePlayers[id];
 			}
 		});
+	}
+
+	private createRemotePlayerCollision(): CANNON.Body
+	{
+		const body = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
+		body.addShape(new CANNON.Sphere(0.45));
+		body.collisionFilterGroup = 2; // Characters
+		body.collisionFilterMask = ~4; // collide with default (cars) and characters, not trimesh
+		this.world.physicsWorld.addBody(body);
+		return body;
+	}
+
+	private syncRemotePlayerCollision(remote: RemotePlayer, position: THREE.Vector3, invisible: boolean): void
+	{
+		if (invisible)
+		{
+			// Invisible players still collide (optional: remove body to phase through)
+			// Keep collision so cars still hit them
+		}
+		if (remote.playerCollision === undefined)
+		{
+			remote.playerCollision = this.createRemotePlayerCollision();
+		}
+		remote.playerCollision.position.set(position.x, position.y + 0.5, position.z);
+		remote.playerCollision.velocity.setZero();
+	}
+
+	private removeRemotePlayerCollision(remote: RemotePlayer): void
+	{
+		if (remote.playerCollision !== undefined)
+		{
+			this.world.physicsWorld.remove(remote.playerCollision);
+			remote.playerCollision = undefined;
+		}
 	}
 
 	private createRemotePlayer(id: string, state: OnlinePlayerState): void
@@ -361,8 +423,18 @@ export class OnlineMultiplayer
 			character.setPlayerName(state.name || 'Player');
 			character.userData.playerName = state.name || 'Player';
 			character.setModeratorSkin(state.moderator === true);
-			this.remotePlayers[id] = { character, color: state.color, lastSeen: Date.now() };
-			this.setRemoteAnimation(this.remotePlayers[id], state.vehicleType !== undefined ? 'driving' : state.moving === true ? 'run' : 'idle');
+			const inv = state.invisible === true;
+			character.visible = !inv;
+			const remote: RemotePlayer = {
+				character,
+				color: state.color,
+				lastSeen: Date.now(),
+				invisible: inv,
+				playerCollision: this.createRemotePlayerCollision()
+			};
+			remote.playerCollision.position.set(state.x, state.y + 0.5, state.z);
+			this.remotePlayers[id] = remote;
+			this.setRemoteAnimation(remote, state.vehicleType !== undefined ? 'driving' : state.moving === true ? 'run' : 'idle');
 		});
 	}
 
@@ -915,7 +987,7 @@ export class OnlineMultiplayer
 			{
 				if (!this.bodyguardsEnabled) return;
 				const guard = new Character(model);
-				// Real physics AI like map citizens — collisions + gravity
+				// Real physics AI — collisions + gravity (same as map citizens)
 				guard.setModeratorSkin(true);
 				guard.setPlayerName('Bodyguard');
 				guard.setPlayerColor('#1a1a2e');
@@ -927,6 +999,17 @@ export class OnlineMultiplayer
 				);
 				guard.setBehaviour(new FollowTarget(marker, 1.1));
 				this.world.add(guard);
+				// Ensure cars (Default group) collide with bodyguards (Characters group)
+				if (guard.characterCapsule !== undefined)
+				{
+					guard.characterCapsule.body.collisionFilterGroup = 2;
+					guard.characterCapsule.body.collisionFilterMask = ~4;
+					guard.characterCapsule.body.shapes.forEach((shape: any) =>
+					{
+						shape.collisionFilterGroup = 2;
+						shape.collisionFilterMask = ~4;
+					});
+				}
 				this.bodyguards.push(guard);
 			});
 		}
@@ -1018,9 +1101,16 @@ export class OnlineMultiplayer
 		room.add(exitPad);
 
 		this.world.graphicsWorld.add(room);
+		room.visible = false; // invisible from outside — only shown while inside
 		this.secretRoom = room;
 
-		// Visible portal marker in the world (moderator-only entrance hint)
+		// Physics floor so you don't fall through the secret room
+		const floorBody = new CANNON.Body({ mass: 0 });
+		floorBody.addShape(new CANNON.Box(new CANNON.Vec3(12, 0.2, 12)));
+		floorBody.position.set(this.secretRoomPos.x, this.secretRoomPos.y, this.secretRoomPos.z);
+		this.world.physicsWorld.addBody(floorBody);
+
+		// Visible portal marker on the eastern watch tower top
 		const portal = new THREE.Mesh(
 			new THREE.BoxGeometry(2.2, 3.2, 0.4),
 			new THREE.MeshStandardMaterial({
@@ -1031,15 +1121,13 @@ export class OnlineMultiplayer
 				opacity: 0.55
 			})
 		);
-		portal.position.copy(this.secretPortalPos);
-		portal.position.y = 1.6;
+		portal.position.set(this.secretPortalPos.x, this.secretPortalPos.y + 1.6, this.secretPortalPos.z);
 		portal.name = 'secretPortal';
 		this.world.graphicsWorld.add(portal);
 
-		// Simple ground collider under portal so you can "run into" it
 		const portalBody = new CANNON.Body({ mass: 0 });
 		portalBody.addShape(new CANNON.Box(new CANNON.Vec3(1.1, 1.6, 0.2)));
-		portalBody.position.set(this.secretPortalPos.x, 1.6, this.secretPortalPos.z);
+		portalBody.position.set(this.secretPortalPos.x, this.secretPortalPos.y + 1.6, this.secretPortalPos.z);
 		this.world.physicsWorld.addBody(portalBody);
 	}
 
@@ -1057,7 +1145,7 @@ export class OnlineMultiplayer
 			const dx = pos.x - this.secretPortalPos.x;
 			const dz = pos.z - this.secretPortalPos.z;
 			const dist = Math.sqrt(dx * dx + dz * dz);
-			if (dist < 2.2 && pos.y < 4)
+			if (dist < 3.0 && Math.abs(pos.y - this.secretPortalPos.y) < 5)
 			{
 				this.teleportToSecretRoom();
 			}
@@ -1079,17 +1167,22 @@ export class OnlineMultiplayer
 	private teleportToSecretRoom(): void
 	{
 		if (this.localCharacter === undefined) return;
+		this.setupSecretRoom();
 		this.inSecretRoom = true;
+		if (this.secretRoom !== null) this.secretRoom.visible = true;
 		this.portalCooldown = 1.5;
 		const p = this.secretRoomPos;
+		// Stand on the room floor (y≈97.5) — above death barrier (y < 15)
+		const standY = p.y + 2.0;
 		const body = this.localCharacter.characterCapsule?.body;
 		if (body !== undefined)
 		{
-			body.position.set(p.x, p.y + 1.5, p.z);
-			body.interpolatedPosition.set(p.x, p.y + 1.5, p.z);
+			body.position.set(p.x, standY, p.z);
+			body.interpolatedPosition.set(p.x, standY, p.z);
 			body.velocity.set(0, 0, 0);
+			body.angularVelocity.set(0, 0, 0);
 		}
-		this.localCharacter.position.set(p.x, p.y + 1.5, p.z);
+		this.localCharacter.position.set(p.x, standY, p.z);
 		this.localCharacter.isFlying = false;
 	}
 
@@ -1097,6 +1190,7 @@ export class OnlineMultiplayer
 	{
 		if (this.localCharacter === undefined) return;
 		this.inSecretRoom = false;
+		if (this.secretRoom !== null) this.secretRoom.visible = false;
 		this.portalCooldown = 1.5;
 		const p = this.secretPortalPos;
 		const body = this.localCharacter.characterCapsule?.body;
