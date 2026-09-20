@@ -85,6 +85,9 @@ export class OnlineMultiplayer
 	private chatPanel: HTMLElement;
 	private centerCursor: HTMLElement;
 	private currentTargetName: string = '';
+	private modClones: Character[] = [];
+	private modCloneIndex: number = -1;
+	private cloneKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 
 	constructor(world: World, loadingManager: LoadingManager)
 	{
@@ -608,5 +611,96 @@ export class OnlineMultiplayer
 		this.lobbyMenu.style.display = 'none';
 		this.moderatorMenu.style.display = this.isModerator ? 'block' : 'none';
 		this.centerCursor.style.display = this.isModerator ? 'block' : 'none';
+		if (this.isModerator) this.bindModeratorCloneKeys();
+	}
+
+	private bindModeratorCloneKeys(): void
+	{
+		if (this.cloneKeyHandler) return;
+		this.cloneKeyHandler = (event: KeyboardEvent) =>
+		{
+			if (!this.isModerator || this.localCharacter === undefined) return;
+			// Ignore when typing in chat
+			const tag = (event.target as HTMLElement)?.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+			if (event.code === 'KeyG' && event.type === 'keydown')
+			{
+				event.preventDefault();
+				if (event.shiftKey) this.switchModeratorClone();
+				else this.spawnModeratorClone();
+			}
+			if (event.code === 'KeyP' && event.type === 'keydown')
+			{
+				event.preventDefault();
+				this.removeAllModeratorClones();
+			}
+		};
+		window.addEventListener('keydown', this.cloneKeyHandler);
+	}
+
+	private spawnModeratorClone(): void
+	{
+		if (this.localCharacter === undefined) return;
+		if (this.modClones.length >= 8) return; // soft limit
+
+		this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
+		{
+			const clone = new Character(model);
+			clone.isRemote = true;
+			clone.setPhysicsEnabled(false);
+			clone.setModeratorSkin(true);
+			clone.setPlayerName((this.playerName || 'Mod') + ' clone');
+			clone.setPlayerColor(this.playerColor);
+
+			const pos = this.localCharacter.position.clone();
+			const quat = this.localCharacter.quaternion.clone();
+			clone.position.copy(pos);
+			clone.quaternion.copy(quat);
+			clone.setAnimation('idle', 0.1);
+
+			this.world.add(clone);
+			this.modClones.push(clone);
+			this.modCloneIndex = this.modClones.length - 1;
+		});
+	}
+
+	private switchModeratorClone(): void
+	{
+		if (this.localCharacter === undefined || this.modClones.length === 0) return;
+
+		// Leave a body at current position
+		const currentPos = this.localCharacter.position.clone();
+		const currentQuat = this.localCharacter.quaternion.clone();
+
+		this.modCloneIndex = (this.modCloneIndex + 1) % this.modClones.length;
+		const target = this.modClones[this.modCloneIndex];
+		if (target === undefined) return;
+
+		const targetPos = target.position.clone();
+		const targetQuat = target.quaternion.clone();
+
+		// Swap: target clone takes old player pos, player takes clone pos
+		target.position.copy(currentPos);
+		target.quaternion.copy(currentQuat);
+
+		if (this.localCharacter.characterCapsule !== undefined)
+		{
+			this.localCharacter.characterCapsule.body.position.set(targetPos.x, targetPos.y, targetPos.z);
+			this.localCharacter.characterCapsule.body.interpolatedPosition.set(targetPos.x, targetPos.y, targetPos.z);
+			this.localCharacter.characterCapsule.body.velocity.set(0, 0, 0);
+		}
+		this.localCharacter.position.copy(targetPos);
+		this.localCharacter.quaternion.copy(targetQuat);
+	}
+
+	private removeAllModeratorClones(): void
+	{
+		this.modClones.forEach((clone) =>
+		{
+			this.world.remove(clone);
+		});
+		this.modClones = [];
+		this.modCloneIndex = -1;
 	}
 }
