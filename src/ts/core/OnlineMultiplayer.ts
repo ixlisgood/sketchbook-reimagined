@@ -12,6 +12,7 @@ import { PickupTruck } from '../vehicles/PickupTruck';
 import { Airplane } from '../vehicles/Airplane';
 import { Helicopter } from '../vehicles/Helicopter';
 import { LoadingManager } from './LoadingManager';
+import { FollowTarget } from '../characters/character_ai/FollowTarget';
 
 interface OnlinePlayerState
 {
@@ -90,8 +91,13 @@ export class OnlineMultiplayer
 	private modCloneIndex: number = -1;
 	private cloneKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 	private bodyguards: Character[] = [];
-	private bodyguardAngle: number = 0;
+	private bodyguardMarkers: THREE.Object3D[] = [];
 	private bodyguardsEnabled: boolean = false;
+	private secretRoom: THREE.Group | null = null;
+	private secretPortalPos: THREE.Vector3 = new THREE.Vector3(12, 0.5, -28);
+	private secretRoomPos: THREE.Vector3 = new THREE.Vector3(0, -80, 0);
+	private inSecretRoom: boolean = false;
+	private portalCooldown: number = 0;
 
 	constructor(world: World, loadingManager: LoadingManager)
 	{
@@ -122,6 +128,7 @@ export class OnlineMultiplayer
 	{
 		this.updateTargetCursor();
 		this.updateBodyguards(timeStep);
+		this.updateSecretPortal(timeStep);
 		if (this.localCharacter === undefined || this.playerRef === undefined) return;
 
 		const now = Date.now();
@@ -679,7 +686,11 @@ export class OnlineMultiplayer
 		this.lobbyMenu.style.display = 'none';
 		this.moderatorMenu.style.display = this.isModerator ? 'block' : 'none';
 		this.centerCursor.style.display = this.isModerator ? 'block' : 'none';
-		if (this.isModerator) this.bindModeratorCloneKeys();
+		if (this.isModerator)
+		{
+			this.bindModeratorCloneKeys();
+			this.setupSecretRoom();
+		}
 	}
 
 	private bindModeratorCloneKeys(): void
@@ -790,24 +801,35 @@ export class OnlineMultiplayer
 		const origin = this.localCharacter !== undefined
 			? this.localCharacter.position.clone()
 			: new THREE.Vector3();
+		const radius = 1.85;
+
 		for (let i = 0; i < count; i++)
 		{
+			const angle = (i / count) * Math.PI * 2;
+			const marker = new THREE.Object3D();
+			marker.position.set(
+				origin.x + Math.cos(angle) * radius,
+				origin.y,
+				origin.z + Math.sin(angle) * radius
+			);
+			this.world.graphicsWorld.add(marker);
+			this.bodyguardMarkers.push(marker);
+
 			this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
 			{
 				if (!this.bodyguardsEnabled) return;
 				const guard = new Character(model);
-				guard.isRemote = true;
-				guard.setPhysicsEnabled(false);
+				// Real physics AI like map citizens — collisions + gravity
 				guard.setModeratorSkin(true);
 				guard.setPlayerName('Bodyguard');
 				guard.setPlayerColor('#1a1a2e');
-				guard.setAnimation('idle', 0.1);
-				const spread = 2.5;
-				guard.position.set(
+				const spread = 2.0;
+				guard.setPosition(
 					origin.x + (Math.random() - 0.5) * spread,
-					origin.y,
+					origin.y + 0.5,
 					origin.z + (Math.random() - 0.5) * spread
 				);
+				guard.setBehaviour(new FollowTarget(marker, 1.1));
 				this.world.add(guard);
 				this.bodyguards.push(guard);
 			});
@@ -818,62 +840,176 @@ export class OnlineMultiplayer
 	{
 		this.bodyguards.forEach((guard) => this.world.remove(guard));
 		this.bodyguards = [];
+		this.bodyguardMarkers.forEach((m) => this.world.graphicsWorld.remove(m));
+		this.bodyguardMarkers = [];
 	}
 
 	private updateBodyguards(timeStep: number): void
 	{
-		if (!this.bodyguardsEnabled || this.localCharacter === undefined || this.bodyguards.length === 0) return;
+		if (!this.bodyguardsEnabled || this.localCharacter === undefined) return;
+		if (this.bodyguardMarkers.length === 0) return;
 
 		const radius = 1.85;
 		const center = this.localCharacter.position;
-		const n = this.bodyguards.length;
-		// Fixed walk speed so they lag and run to catch up instead of sliding with you
-		const maxSpeed = 5.2;
+		const n = this.bodyguardMarkers.length;
 
-		this.bodyguards.forEach((guard, i) =>
+		// Move follow targets into a circle around the moderator; AI walks there with physics
+		this.bodyguardMarkers.forEach((marker, i) =>
 		{
 			const angle = (i / n) * Math.PI * 2;
-			const targetX = center.x + Math.cos(angle) * radius;
-			const targetZ = center.z + Math.sin(angle) * radius;
-			const targetY = center.y;
-
-			const dx = targetX - guard.position.x;
-			const dy = targetY - guard.position.y;
-			const dz = targetZ - guard.position.z;
-			const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-			if (dist > 0.15)
-			{
-				const move = Math.min(dist, maxSpeed * timeStep);
-				guard.position.x += (dx / dist) * move;
-				guard.position.y += (dy / dist) * move;
-				guard.position.z += (dz / dist) * move;
-
-				guard.lookAt(new THREE.Vector3(
-					guard.position.x + dx,
-					guard.position.y,
-					guard.position.z + dz
-				));
-				guard.setAnimation('run', 0.1);
-			}
-			else
-			{
-				guard.position.x = targetX;
-				guard.position.y = targetY;
-				guard.position.z = targetZ;
-
-				const face = new THREE.Vector3(targetX - center.x, 0, targetZ - center.z);
-				if (face.lengthSq() > 0.001)
-				{
-					face.normalize();
-					guard.lookAt(new THREE.Vector3(
-						guard.position.x + face.x,
-						guard.position.y,
-						guard.position.z + face.z
-					));
-				}
-				guard.setAnimation('idle', 0.2);
-			}
+			marker.position.set(
+				center.x + Math.cos(angle) * radius,
+				center.y,
+				center.z + Math.sin(angle) * radius
+			);
 		});
+	}
+
+	private setupSecretRoom(): void
+	{
+		if (this.secretRoom !== null) return;
+
+		const room = new THREE.Group();
+		room.position.copy(this.secretRoomPos);
+
+		const floorMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.8 });
+		const wallMat = new THREE.MeshStandardMaterial({ color: 0x0d1117, roughness: 0.9 });
+		const accentMat = new THREE.MeshStandardMaterial({
+			color: 0x168cff,
+			emissive: 0x168cff,
+			emissiveIntensity: 0.4
+		});
+
+		const floor = new THREE.Mesh(new THREE.BoxGeometry(24, 0.4, 24), floorMat);
+		floor.position.y = 0;
+		room.add(floor);
+
+		const ceiling = new THREE.Mesh(new THREE.BoxGeometry(24, 0.3, 24), wallMat);
+		ceiling.position.y = 6;
+		room.add(ceiling);
+
+		const wallH = 6;
+		const wallT = 0.4;
+		const walls = [
+			{ x: 0, z: -12, w: 24, d: wallT },
+			{ x: 0, z: 12, w: 24, d: wallT },
+			{ x: -12, z: 0, w: wallT, d: 24 },
+			{ x: 12, z: 0, w: wallT, d: 24 }
+		];
+		walls.forEach((w) =>
+		{
+			const mesh = new THREE.Mesh(new THREE.BoxGeometry(w.w, wallH, w.d), wallMat);
+			mesh.position.set(w.x, wallH / 2, w.z);
+			room.add(mesh);
+		});
+
+		// Accent pillars
+		for (let i = 0; i < 4; i++)
+		{
+			const a = (i / 4) * Math.PI * 2;
+			const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.6, 5.5, 0.6), accentMat);
+			pillar.position.set(Math.cos(a) * 8, 2.75, Math.sin(a) * 8);
+			room.add(pillar);
+		}
+
+		// Exit pad (walk here to leave)
+		const exitPad = new THREE.Mesh(
+			new THREE.CylinderGeometry(1.5, 1.5, 0.15, 16),
+			accentMat
+		);
+		exitPad.position.set(0, 0.15, 0);
+		exitPad.name = 'secretExit';
+		room.add(exitPad);
+
+		this.world.graphicsWorld.add(room);
+		this.secretRoom = room;
+
+		// Visible portal marker in the world (moderator-only entrance hint)
+		const portal = new THREE.Mesh(
+			new THREE.BoxGeometry(2.2, 3.2, 0.4),
+			new THREE.MeshStandardMaterial({
+				color: 0x168cff,
+				emissive: 0x168cff,
+				emissiveIntensity: 0.6,
+				transparent: true,
+				opacity: 0.55
+			})
+		);
+		portal.position.copy(this.secretPortalPos);
+		portal.position.y = 1.6;
+		portal.name = 'secretPortal';
+		this.world.graphicsWorld.add(portal);
+
+		// Simple ground collider under portal so you can "run into" it
+		const portalBody = new CANNON.Body({ mass: 0 });
+		portalBody.addShape(new CANNON.Box(new CANNON.Vec3(1.1, 1.6, 0.2)));
+		portalBody.position.set(this.secretPortalPos.x, 1.6, this.secretPortalPos.z);
+		this.world.physicsWorld.addBody(portalBody);
+	}
+
+	private updateSecretPortal(timeStep: number): void
+	{
+		if (!this.isModerator || this.localCharacter === undefined) return;
+		this.portalCooldown = Math.max(0, this.portalCooldown - timeStep);
+		if (this.portalCooldown > 0) return;
+
+		const pos = this.localCharacter.position;
+
+		if (!this.inSecretRoom)
+		{
+			// Run into the portal / side wall marker to enter
+			const dx = pos.x - this.secretPortalPos.x;
+			const dz = pos.z - this.secretPortalPos.z;
+			const dist = Math.sqrt(dx * dx + dz * dz);
+			if (dist < 2.2 && pos.y < 4)
+			{
+				this.teleportToSecretRoom();
+			}
+		}
+		else
+		{
+			// Stand on center pad to exit
+			const room = this.secretRoomPos;
+			const dx = pos.x - room.x;
+			const dz = pos.z - room.z;
+			const dist = Math.sqrt(dx * dx + dz * dz);
+			if (dist < 1.8 && Math.abs(pos.y - room.y) < 3)
+			{
+				this.teleportFromSecretRoom();
+			}
+		}
+	}
+
+	private teleportToSecretRoom(): void
+	{
+		if (this.localCharacter === undefined) return;
+		this.inSecretRoom = true;
+		this.portalCooldown = 1.5;
+		const p = this.secretRoomPos;
+		const body = this.localCharacter.characterCapsule?.body;
+		if (body !== undefined)
+		{
+			body.position.set(p.x, p.y + 1.5, p.z);
+			body.interpolatedPosition.set(p.x, p.y + 1.5, p.z);
+			body.velocity.set(0, 0, 0);
+		}
+		this.localCharacter.position.set(p.x, p.y + 1.5, p.z);
+		this.localCharacter.isFlying = false;
+	}
+
+	private teleportFromSecretRoom(): void
+	{
+		if (this.localCharacter === undefined) return;
+		this.inSecretRoom = false;
+		this.portalCooldown = 1.5;
+		const p = this.secretPortalPos;
+		const body = this.localCharacter.characterCapsule?.body;
+		if (body !== undefined)
+		{
+			body.position.set(p.x, p.y + 2, p.z - 3);
+			body.interpolatedPosition.set(p.x, p.y + 2, p.z - 3);
+			body.velocity.set(0, 0, 0);
+		}
+		this.localCharacter.position.set(p.x, p.y + 2, p.z - 3);
 	}
 }
