@@ -89,6 +89,9 @@ export class OnlineMultiplayer
 	private chatPanel: HTMLElement;
 	private centerCursor: HTMLElement;
 	private currentTargetName: string = '';
+	private currentTargetObject: THREE.Object3D | null = null;
+	private currentTargetRemoteId: string | null = null;
+	private flingClickHandler: ((e: MouseEvent) => void) | null = null;
 	private modClones: Character[] = [];
 	private modCloneIndex: number = -1;
 	private cloneKeyHandler: ((e: KeyboardEvent) => void) | null = null;
@@ -787,7 +790,7 @@ export class OnlineMultiplayer
 		this.chatRef?.push({ name: 'Moderator', text: '!' + command + ' ' + target, at: firebase.database.ServerValue.TIMESTAMP });
 	}
 
-	private applyCommand(command: string, target: string): void
+	private applyCommand(command: string, target: string, data?: any): void
 	{
 		if (target.toLowerCase() !== this.playerName.toLowerCase() || this.localCharacter === undefined) return;
 		if (command === 'freeze') this.localCharacter.isFrozen = !this.localCharacter.isFrozen;
@@ -806,12 +809,35 @@ export class OnlineMultiplayer
 		{
 			this.localCharacter.exitVehicle();
 		}
+		if (command === 'fling')
+		{
+			const dx = typeof data?.dx === 'number' ? data.dx : 15;
+			const dy = typeof data?.dy === 'number' ? data.dy : 20;
+			const dz = typeof data?.dz === 'number' ? data.dz : 15;
+			const body = this.localCharacter.characterCapsule?.body;
+			if (body !== undefined)
+			{
+				body.velocity.x += dx;
+				body.velocity.y += dy;
+				body.velocity.z += dz;
+			}
+			if (this.localCharacter.occupyingSeat !== null)
+			{
+				const veh: any = this.localCharacter.occupyingSeat.vehicle;
+				if (veh?.collision !== undefined)
+				{
+					veh.collision.velocity.x += dx;
+					veh.collision.velocity.y += dy;
+					veh.collision.velocity.z += dz;
+				}
+			}
+		}
 	}
 
 	private updateTargetCursor(): void
 	{
 		if (!this.isModerator || this.localCharacter === undefined) return;
-		const candidates: Array<{ name: string; object: THREE.Object3D; distance: number }> = [];
+		const candidates: Array<{ name: string; object: THREE.Object3D; distance: number; remoteId: string }> = [];
 		Object.keys(this.remotePlayers).forEach((id) =>
 		{
 			const remote = this.remotePlayers[id];
@@ -820,12 +846,113 @@ export class OnlineMultiplayer
 			objects.forEach((object) =>
 			{
 				const projected = object.position.clone().project(this.world.camera);
-				if (projected.z > -1 && projected.z < 1) candidates.push({ name: targetName, object, distance: Math.sqrt(projected.x * projected.x + projected.y * projected.y) });
+				if (projected.z > -1 && projected.z < 1)
+				{
+					candidates.push({
+						name: targetName,
+						object,
+						distance: Math.sqrt(projected.x * projected.x + projected.y * projected.y),
+						remoteId: id
+					});
+				}
 			});
 		});
 		candidates.sort((a, b) => a.distance - b.distance);
-		this.currentTargetName = candidates.length > 0 && candidates[0].distance < 0.18 ? candidates[0].name : '';
+		if (candidates.length > 0 && candidates[0].distance < 0.22)
+		{
+			this.currentTargetName = candidates[0].name;
+			this.currentTargetObject = candidates[0].object;
+			this.currentTargetRemoteId = candidates[0].remoteId;
+		}
+		else
+		{
+			this.currentTargetName = '';
+			this.currentTargetObject = null;
+			this.currentTargetRemoteId = null;
+		}
 		this.centerCursor.classList.toggle('targeting', this.currentTargetName !== '');
+	}
+
+	private bindModeratorFlingClick(): void
+	{
+		if (this.flingClickHandler) return;
+		this.flingClickHandler = (event: MouseEvent) =>
+		{
+			if (!this.isModerator || event.button !== 0) return;
+			const tag = (event.target as HTMLElement)?.tagName;
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
+			this.flingCurrentTarget();
+		};
+		window.addEventListener('mousedown', this.flingClickHandler);
+	}
+
+	private flingCurrentTarget(): void
+	{
+		if (this.localCharacter === undefined) return;
+
+		// Direction: from camera / view forward with upward boost
+		const dir = new THREE.Vector3();
+		this.world.camera.getWorldDirection(dir);
+		dir.y = Math.max(0.35, dir.y + 0.5);
+		dir.normalize();
+		const force = 28;
+
+		// 1) Crosshair target: remote player / their car
+		if (this.currentTargetRemoteId !== null && this.remotePlayers[this.currentTargetRemoteId] !== undefined)
+		{
+			const remote = this.remotePlayers[this.currentTargetRemoteId];
+			const name = remote.character.userData.playerName || this.currentTargetName || 'Player';
+			// Visual fling on our client
+			if (remote.vehicleCollision !== undefined)
+			{
+				remote.vehicleCollision.velocity.set(dir.x * force, dir.y * force, dir.z * force);
+			}
+			if (remote.playerCollision !== undefined)
+			{
+				remote.playerCollision.velocity.set(dir.x * force * 0.6, dir.y * force * 0.6, dir.z * force * 0.6);
+			}
+			remote.character.position.x += dir.x * 0.5;
+			remote.character.position.y += dir.y * 0.5;
+			remote.character.position.z += dir.z * 0.5;
+			// Tell the target client to actually get flung
+			this.commandRef?.push({
+				command: 'fling',
+				target: name,
+				dx: dir.x * force,
+				dy: dir.y * force,
+				dz: dir.z * force,
+				at: firebase.database.ServerValue.TIMESTAMP
+			});
+			return;
+		}
+
+		// 2) Nearby world vehicles (local physics cars)
+		if (this.world.vehicles !== undefined)
+		{
+			let best: any = null;
+			let bestDist = 8;
+			const origin = this.localCharacter.position;
+			this.world.vehicles.forEach((vehicle: any) =>
+			{
+				const pos = vehicle.position || vehicle.collision?.position;
+				if (pos === undefined) return;
+				const dx = pos.x - origin.x;
+				const dy = pos.y - origin.y;
+				const dz = pos.z - origin.z;
+				const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+				if (d < bestDist)
+				{
+					bestDist = d;
+					best = vehicle;
+				}
+			});
+			if (best !== undefined && best !== null && best.collision !== undefined)
+			{
+				best.collision.velocity.x += dir.x * force;
+				best.collision.velocity.y += dir.y * force;
+				best.collision.velocity.z += dir.z * force;
+			}
+		}
 	}
 
 	private joinLobby(): void
@@ -871,7 +998,7 @@ export class OnlineMultiplayer
 		this.commandRef.on('child_added', (snapshot) =>
 		{
 			const command = snapshot.val();
-			if (command?.command && command?.target) this.applyCommand(command.command, command.target);
+			if (command?.command && command?.target) this.applyCommand(command.command, command.target, command);
 		});
 		this.chatRef.on('value', (snapshot) =>
 		{
@@ -885,7 +1012,11 @@ export class OnlineMultiplayer
 		this.lobbyMenu.style.display = 'none';
 		this.moderatorMenu.style.display = this.isModerator ? 'block' : 'none';
 		this.centerCursor.style.display = this.isModerator ? 'block' : 'none';
-		if (this.isModerator) this.bindModeratorCloneKeys();
+		if (this.isModerator)
+		{
+			this.bindModeratorCloneKeys();
+			this.bindModeratorFlingClick();
+		}
 	}
 
 	private bindModeratorCloneKeys(): void
@@ -1084,25 +1215,35 @@ export class OnlineMultiplayer
 
 		this.bodyguards.forEach((guard) =>
 		{
-			guard.isFlying = flying;
+			// Never use Character.isFlying — that fly controller launches them chaotically
+			guard.isFlying = false;
 			const marker = guard.userData.bodyguardMarker as THREE.Object3D;
+			if (guard.characterCapsule === undefined || marker === undefined) return;
 
-			if (flying && guard.characterCapsule !== undefined && marker !== undefined)
+			const body = guard.characterCapsule.body;
+
+			if (flying)
 			{
-				// Fly with you in formation — smooth follow, no gravity fling
-				const body = guard.characterCapsule.body;
+				// Carry them with you in the circle (position lock, no fly physics)
 				const t = marker.position;
-				const blend = Math.min(1, 12 * timeStep);
-				body.position.x += (t.x - body.position.x) * blend;
-				body.position.y += (t.y - body.position.y) * blend;
-				body.position.z += (t.z - body.position.z) * blend;
-				body.interpolatedPosition.copy(body.position);
 				body.velocity.set(0, 0, 0);
 				body.angularVelocity.set(0, 0, 0);
 				body.force.set(0, 0, 0);
-				guard.position.set(body.position.x, body.position.y, body.position.z);
+				body.position.set(t.x, t.y, t.z);
+				body.interpolatedPosition.set(t.x, t.y, t.z);
+				guard.position.set(t.x, t.y, t.z);
 				guard.triggerAction('up', false);
+				guard.triggerAction('run', false);
 				guard.setAnimation('idle', 0.1);
+			}
+			else
+			{
+				// Ground: kill runaway velocities from physics glitches
+				if (body.velocity.length() > 10)
+				{
+					body.velocity.set(0, 0, 0);
+					body.angularVelocity.set(0, 0, 0);
+				}
 			}
 		});
 

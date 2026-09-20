@@ -36,6 +36,8 @@ export declare class OnlineMultiplayer {
     private bodyguards;
     private bodyguardMarkers;
     private bodyguardsEnabled;
+    /** Real controlled player only — never a mod clone */
+    private bodyguardHost;
     private bodyguardsRef;
     private remoteBodyguards;
     private remoteBodyguardCollisions;
