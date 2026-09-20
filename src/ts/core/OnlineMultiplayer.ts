@@ -34,6 +34,7 @@ interface OnlinePlayerState
 	frozen?: boolean;
 	flying?: boolean;
 	speedBoost?: boolean;
+	invisible?: boolean;
 }
 
 interface RemotePlayer
@@ -88,6 +89,9 @@ export class OnlineMultiplayer
 	private modClones: Character[] = [];
 	private modCloneIndex: number = -1;
 	private cloneKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+	private bodyguards: Character[] = [];
+	private bodyguardAngle: number = 0;
+	private bodyguardsEnabled: boolean = false;
 
 	constructor(world: World, loadingManager: LoadingManager)
 	{
@@ -117,6 +121,7 @@ export class OnlineMultiplayer
 	public update(timeStep: number): void
 	{
 		this.updateTargetCursor();
+		this.updateBodyguards(timeStep);
 		if (this.localCharacter === undefined || this.playerRef === undefined) return;
 
 		const now = Date.now();
@@ -154,6 +159,7 @@ export class OnlineMultiplayer
 		state.frozen = this.freezeEveryone && !this.isModerator;
 		state.flying = this.localCharacter.isFlying;
 		state.speedBoost = this.localCharacter.moveSpeed > 4;
+		state.invisible = this.localCharacter.visible === false;
 
 		this.playerRef.set(state).catch((error) => console.error('Online multiplayer update failed', error));
 	}
@@ -191,6 +197,7 @@ export class OnlineMultiplayer
 			remote.character.setModeratorSkin(isRemoteMod);
 			remote.character.isFlying = state.flying === true;
 			remote.character.moveSpeed = state.speedBoost === true ? 12 : 4;
+			remote.character.visible = state.invisible !== true;
 			if (state.kickAt !== undefined && state.kickAt > (remote.lastKickAt || 0))
 			{
 				remote.lastKickAt = state.kickAt;
@@ -433,20 +440,36 @@ export class OnlineMultiplayer
 	{
 		const menu = document.createElement('div');
 		menu.id = 'moderator-menu';
-		menu.innerHTML = '<div class="moderator-panel"><strong>Moderator</strong>' +
+		menu.innerHTML = '<div class="moderator-panel">' +
+			'<strong>Moderator</strong>' +
 			'<button id="mod-fly">Fly</button>' +
+			'<button id="mod-invisible">Invisible</button>' +
+			'<button id="mod-speed">Speed boost</button>' +
 			'<button id="mod-freeze">Freeze everyone</button>' +
 			'<button id="mod-slow">Slow everyone</button>' +
-			'<button id="mod-speed">Speed boost</button></div>';
+			'<button id="mod-kickvehicles">Kick all from vehicles</button>' +
+			'<button id="mod-sky">Teleport to sky</button>' +
+			'<button id="mod-clone">Clone (G)</button>' +
+			'<button id="mod-switchclone">Switch clone (Shift+G)</button>' +
+			'<button id="mod-clearclones">Clear clones (P)</button>' +
+			'<button id="mod-bodyguards">Bodyguards</button>' +
+			'<button id="mod-heal">Reset velocity</button>' +
+			'</div>';
 		document.body.appendChild(menu);
 		this.moderatorMenu = menu;
 		this.centerCursor = document.createElement('div');
 		this.centerCursor.id = 'moderator-cursor';
 		document.body.appendChild(this.centerCursor);
-		(document.getElementById('mod-freeze') as HTMLElement).onclick = () =>
+
+		const bind = (id: string, fn: () => void) =>
+		{
+			const el = document.getElementById(id);
+			if (el) el.onclick = fn;
+		};
+
+		bind('mod-freeze', () =>
 		{
 			this.freezeEveryone = !this.freezeEveryone;
-			// Freeze never affects the moderator
 			if (this.localCharacter !== undefined) this.localCharacter.isFrozen = false;
 			Object.keys(this.remotePlayers).forEach((id) =>
 			{
@@ -454,8 +477,8 @@ export class OnlineMultiplayer
 				remote.character.isFrozen = this.freezeEveryone && !(remote.character as any).moderatorSkinEnabled;
 			});
 			if (this.controlRef !== undefined) this.controlRef.update({ freeze: this.freezeEveryone, slow: this.slowEveryone });
-		};
-		(document.getElementById('mod-slow') as HTMLElement).onclick = () =>
+		});
+		bind('mod-slow', () =>
 		{
 			this.slowEveryone = !this.slowEveryone;
 			if (this.localCharacter !== undefined) this.localCharacter.isSlowed = false;
@@ -465,29 +488,71 @@ export class OnlineMultiplayer
 				remote.character.isSlowed = this.slowEveryone && !(remote.character as any).moderatorSkinEnabled;
 			});
 			if (this.controlRef !== undefined) this.controlRef.update({ freeze: this.freezeEveryone, slow: this.slowEveryone });
-		};
-		(document.getElementById('mod-fly') as HTMLElement).onclick = () =>
+		});
+		bind('mod-fly', () =>
 		{
-			if (this.localCharacter !== undefined)
+			if (this.localCharacter === undefined) return;
+			this.localCharacter.isFlying = !this.localCharacter.isFlying;
+			if (this.localCharacter.occupyingSeat !== null)
 			{
-				this.localCharacter.isFlying = !this.localCharacter.isFlying;
-				if (this.localCharacter.occupyingSeat !== null)
-				{
-					(this.localCharacter.occupyingSeat.vehicle as any).userData.fly = this.localCharacter.isFlying;
-				}
+				(this.localCharacter.occupyingSeat.vehicle as any).userData.fly = this.localCharacter.isFlying;
 			}
-		};
-		(document.getElementById('mod-speed') as HTMLElement).onclick = () =>
+		});
+		bind('mod-speed', () =>
 		{
-			if (this.localCharacter !== undefined)
+			if (this.localCharacter === undefined) return;
+			this.localCharacter.moveSpeed = this.localCharacter.moveSpeed === 12 ? 4 : 12;
+			if (this.localCharacter.occupyingSeat !== null)
 			{
-				this.localCharacter.moveSpeed = this.localCharacter.moveSpeed === 12 ? 4 : 12;
-				if (this.localCharacter.occupyingSeat !== null)
-				{
-					(this.localCharacter.occupyingSeat.vehicle as any).userData.speedBoost = this.localCharacter.moveSpeed > 4;
-				}
+				(this.localCharacter.occupyingSeat.vehicle as any).userData.speedBoost = this.localCharacter.moveSpeed > 4;
 			}
-		};
+		});
+		bind('mod-invisible', () =>
+		{
+			if (this.localCharacter === undefined) return;
+			this.localCharacter.visible = !this.localCharacter.visible;
+		});
+		bind('mod-kickvehicles', () =>
+		{
+			Object.keys(this.remotePlayers).forEach((id) =>
+			{
+				const remote = this.remotePlayers[id];
+				const name = remote.character.userData.playerName || remote.character.userData.playerName;
+				const target = (remote.character.userData.playerName as string) || 'Player';
+				this.commandRef?.push({
+					command: 'exitvehicle',
+					target,
+					at: firebase.database.ServerValue.TIMESTAMP
+				});
+			});
+		});
+		bind('mod-sky', () =>
+		{
+			if (this.localCharacter === undefined) return;
+			const body = this.localCharacter.characterCapsule?.body;
+			const x = this.localCharacter.position.x;
+			const z = this.localCharacter.position.z;
+			if (body !== undefined)
+			{
+				body.position.set(x, 40, z);
+				body.interpolatedPosition.set(x, 40, z);
+				body.velocity.set(0, 0, 0);
+			}
+			this.localCharacter.position.set(x, 40, z);
+			this.localCharacter.isFlying = true;
+		});
+		bind('mod-clone', () => this.spawnModeratorClone());
+		bind('mod-switchclone', () => this.switchModeratorClone());
+		bind('mod-clearclones', () => this.removeAllModeratorClones());
+		bind('mod-heal', () =>
+		{
+			if (this.localCharacter === undefined) return;
+			const body = this.localCharacter.characterCapsule?.body;
+			if (body !== undefined) body.velocity.set(0, 0, 0);
+			this.localCharacter.isFrozen = false;
+			this.localCharacter.isSlowed = false;
+		});
+		bind('mod-bodyguards', () => this.toggleBodyguards());
 	}
 
 	private createChat(): void
@@ -522,7 +587,6 @@ export class OnlineMultiplayer
 	private applyCommand(command: string, target: string): void
 	{
 		if (target.toLowerCase() !== this.playerName.toLowerCase() || this.localCharacter === undefined) return;
-		// Targeted freeze/slow still apply (moderator can target self if desired, but global ones skip mod)
 		if (command === 'freeze') this.localCharacter.isFrozen = !this.localCharacter.isFrozen;
 		if (command === 'slow') this.localCharacter.isSlowed = !this.localCharacter.isSlowed;
 		if (command === 'fly')
@@ -534,6 +598,10 @@ export class OnlineMultiplayer
 		{
 			this.localCharacter.moveSpeed = this.localCharacter.moveSpeed === 12 ? 4 : 12;
 			if (this.localCharacter.occupyingSeat !== null) (this.localCharacter.occupyingSeat.vehicle as any).userData.speedBoost = this.localCharacter.moveSpeed > 4;
+		}
+		if (command === 'exitvehicle' && this.localCharacter.occupyingSeat !== null)
+		{
+			this.localCharacter.exitVehicle();
 		}
 	}
 
@@ -702,5 +770,110 @@ export class OnlineMultiplayer
 		});
 		this.modClones = [];
 		this.modCloneIndex = -1;
+	}
+
+	private toggleBodyguards(): void
+	{
+		if (this.bodyguardsEnabled)
+		{
+			this.clearBodyguards();
+			this.bodyguardsEnabled = false;
+			return;
+		}
+		this.bodyguardsEnabled = true;
+		this.spawnBodyguards(6);
+	}
+
+	private spawnBodyguards(count: number): void
+	{
+		this.clearBodyguards();
+		const origin = this.localCharacter !== undefined
+			? this.localCharacter.position.clone()
+			: new THREE.Vector3();
+		for (let i = 0; i < count; i++)
+		{
+			const index = i;
+			this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
+			{
+				if (!this.bodyguardsEnabled) return;
+				const guard = new Character(model);
+				guard.isRemote = true;
+				guard.setPhysicsEnabled(false);
+				guard.setModeratorSkin(true);
+				guard.setPlayerName('Bodyguard');
+				guard.setPlayerColor('#1a1a2e');
+				guard.setAnimation('idle', 0.1);
+				// Spawn near the player so they walk out into the circle
+				const spread = 1.2;
+				guard.position.set(
+					origin.x + (Math.random() - 0.5) * spread,
+					origin.y,
+					origin.z + (Math.random() - 0.5) * spread
+				);
+				this.world.add(guard);
+				this.bodyguards.push(guard);
+			});
+		}
+	}
+
+	private clearBodyguards(): void
+	{
+		this.bodyguards.forEach((guard) => this.world.remove(guard));
+		this.bodyguards = [];
+	}
+
+	private updateBodyguards(timeStep: number): void
+	{
+		if (!this.bodyguardsEnabled || this.localCharacter === undefined || this.bodyguards.length === 0) return;
+
+		const radius = 3.2;
+		const center = this.localCharacter.position;
+		const n = this.bodyguards.length;
+		// Circle locked to world axes (no spinning); slots stay fixed relative to player position
+		const followSpeed = 6.5;
+
+		this.bodyguards.forEach((guard, i) =>
+		{
+			const angle = (i / n) * Math.PI * 2;
+			const targetX = center.x + Math.cos(angle) * radius;
+			const targetZ = center.z + Math.sin(angle) * radius;
+			const targetY = center.y;
+
+			const dx = targetX - guard.position.x;
+			const dy = targetY - guard.position.y;
+			const dz = targetZ - guard.position.z;
+			const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+			if (dist > 0.05)
+			{
+				const step = Math.min(1, (followSpeed * timeStep) / dist);
+				guard.position.x += dx * step;
+				guard.position.y += dy * step;
+				guard.position.z += dz * step;
+
+				// Face movement direction while walking
+				if (dist > 0.2)
+				{
+					const lookTarget = new THREE.Vector3(guard.position.x + dx, guard.position.y, guard.position.z + dz);
+					guard.lookAt(lookTarget);
+					guard.setAnimation(dist > 4 ? 'run' : 'run', 0.15);
+				}
+				else
+				{
+					guard.setAnimation('idle', 0.2);
+				}
+			}
+			else
+			{
+				// Arrived — face outward from the circle
+				const face = new THREE.Vector3(targetX - center.x, 0, targetZ - center.z);
+				if (face.lengthSq() > 0.001)
+				{
+					face.normalize();
+					guard.lookAt(new THREE.Vector3(guard.position.x + face.x, guard.position.y, guard.position.z + face.z));
+				}
+				guard.setAnimation('idle', 0.2);
+			}
+		});
 	}
 }
