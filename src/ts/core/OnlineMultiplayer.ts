@@ -962,50 +962,32 @@ export class OnlineMultiplayer
 	private spawnBodyguards(count: number): void
 	{
 		this.clearBodyguards();
-		const origin = this.localCharacter !== undefined
-			? this.localCharacter.position.clone()
-			: new THREE.Vector3();
-		const radius = 1.85;
+		if (this.localCharacter === undefined) return;
+
+		const origin = this.localCharacter.position.clone();
 
 		for (let i = 0; i < count; i++)
 		{
-			const angle = (i / count) * Math.PI * 2;
-			const marker = new THREE.Object3D();
-			marker.position.set(
-				origin.x + Math.cos(angle) * radius,
-				origin.y,
-				origin.z + Math.sin(angle) * radius
-			);
-			this.world.graphicsWorld.add(marker);
-			this.bodyguardMarkers.push(marker);
-
 			this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
 			{
-				if (!this.bodyguardsEnabled) return;
+				if (!this.bodyguardsEnabled || this.localCharacter === undefined) return;
+
 				const guard = new Character(model);
-				// Physics AI like map citizens — walk/run with collisions + gravity
+				// Same as map citizens: physics + AI walk, no formation / fly hacks
 				guard.setModeratorSkin(true);
 				guard.setPlayerName('Bodyguard');
 				guard.setPlayerColor('#1a1a2e');
-				const spread = 2.0;
+
+				const spread = 3.5;
 				guard.setPosition(
 					origin.x + (Math.random() - 0.5) * spread,
 					origin.y + 0.5,
 					origin.z + (Math.random() - 0.5) * spread
 				);
-				guard.setBehaviour(new FollowTarget(marker, 1.1));
+
+				// Follow moderator with normal AI stop distance (like following a player)
+				guard.setBehaviour(new FollowTarget(this.localCharacter, 2.8));
 				this.world.add(guard);
-				if (guard.characterCapsule !== undefined)
-				{
-					const b = guard.characterCapsule.body;
-					b.collisionFilterGroup = 1;
-					b.collisionFilterMask = -1;
-					b.shapes.forEach((shape: any) =>
-					{
-						shape.collisionFilterGroup = 1;
-						shape.collisionFilterMask = -1;
-					});
-				}
 				this.bodyguards.push(guard);
 			});
 		}
@@ -1021,51 +1003,14 @@ export class OnlineMultiplayer
 
 	private updateBodyguards(timeStep: number): void
 	{
+		// Let Character.behaviour (FollowTarget) run like map NPCs — do not force positions
 		if (!this.bodyguardsEnabled || this.localCharacter === undefined) return;
-		if (this.bodyguardMarkers.length === 0) return;
-
-		const radius = 1.85;
-		const center = this.localCharacter.position;
-		const n = this.bodyguardMarkers.length;
-		const flying = this.localCharacter.isFlying === true;
-
-		// Circle slots follow the moderator (including height)
-		this.bodyguardMarkers.forEach((marker, i) =>
+		this.bodyguards.forEach((guard) =>
 		{
-			const angle = (i / n) * Math.PI * 2;
-			marker.position.set(
-				center.x + Math.cos(angle) * radius,
-				center.y,
-				center.z + Math.sin(angle) * radius
-			);
-		});
-
-		this.bodyguards.forEach((guard, i) =>
-		{
-			const marker = this.bodyguardMarkers[i];
-			if (marker === undefined) return;
-
-			guard.isFlying = flying;
-
-			if (flying && guard.characterCapsule !== undefined)
+			guard.isFlying = false; // never fly — map AIs stay grounded
+			if (guard.behaviour && typeof (guard.behaviour as FollowTarget).setTarget === 'function')
 			{
-				// Same flight as you: no gravity fling — hold formation in the air
-				const body = guard.characterCapsule.body;
-				const t = marker.position;
-				body.velocity.set(0, 0, 0);
-				body.angularVelocity.set(0, 0, 0);
-				body.force.set(0, 0, 0);
-				body.position.set(t.x, t.y, t.z);
-				body.interpolatedPosition.set(t.x, t.y, t.z);
-				guard.position.set(t.x, t.y, t.z);
-				// Pause walk AI while airborne
-				guard.triggerAction('up', false);
-				guard.setAnimation('idle', 0.1);
-			}
-			else
-			{
-				// Ground: FollowTarget physics AI walks them into the circle
-				this.separateLocalFromPoint(guard.position.x, guard.position.z, 0.85);
+				(guard.behaviour as FollowTarget).setTarget(this.localCharacter);
 			}
 		});
 	}
