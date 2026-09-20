@@ -781,7 +781,7 @@ export class OnlineMultiplayer
 			return;
 		}
 		this.bodyguardsEnabled = true;
-		this.spawnBodyguards(6);
+		this.spawnBodyguards(12);
 	}
 
 	private spawnBodyguards(count: number): void
@@ -792,7 +792,6 @@ export class OnlineMultiplayer
 			: new THREE.Vector3();
 		for (let i = 0; i < count; i++)
 		{
-			const index = i;
 			this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
 			{
 				if (!this.bodyguardsEnabled) return;
@@ -803,8 +802,7 @@ export class OnlineMultiplayer
 				guard.setPlayerName('Bodyguard');
 				guard.setPlayerColor('#1a1a2e');
 				guard.setAnimation('idle', 0.1);
-				// Spawn near the player so they walk out into the circle
-				const spread = 1.2;
+				const spread = 2.5;
 				guard.position.set(
 					origin.x + (Math.random() - 0.5) * spread,
 					origin.y,
@@ -826,11 +824,11 @@ export class OnlineMultiplayer
 	{
 		if (!this.bodyguardsEnabled || this.localCharacter === undefined || this.bodyguards.length === 0) return;
 
-		const radius = 3.2;
+		const radius = 1.85;
 		const center = this.localCharacter.position;
 		const n = this.bodyguards.length;
-		// Circle locked to world axes (no spinning); slots stay fixed relative to player position
-		const followSpeed = 6.5;
+		// Fixed walk speed so they lag and run to catch up instead of sliding with you
+		const maxSpeed = 5.2;
 
 		this.bodyguards.forEach((guard, i) =>
 		{
@@ -844,33 +842,35 @@ export class OnlineMultiplayer
 			const dz = targetZ - guard.position.z;
 			const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-			if (dist > 0.05)
+			if (dist > 0.15)
 			{
-				const step = Math.min(1, (followSpeed * timeStep) / dist);
-				guard.position.x += dx * step;
-				guard.position.y += dy * step;
-				guard.position.z += dz * step;
+				const move = Math.min(dist, maxSpeed * timeStep);
+				guard.position.x += (dx / dist) * move;
+				guard.position.y += (dy / dist) * move;
+				guard.position.z += (dz / dist) * move;
 
-				// Face movement direction while walking
-				if (dist > 0.2)
-				{
-					const lookTarget = new THREE.Vector3(guard.position.x + dx, guard.position.y, guard.position.z + dz);
-					guard.lookAt(lookTarget);
-					guard.setAnimation(dist > 4 ? 'run' : 'run', 0.15);
-				}
-				else
-				{
-					guard.setAnimation('idle', 0.2);
-				}
+				guard.lookAt(new THREE.Vector3(
+					guard.position.x + dx,
+					guard.position.y,
+					guard.position.z + dz
+				));
+				guard.setAnimation('run', 0.1);
 			}
 			else
 			{
-				// Arrived — face outward from the circle
+				guard.position.x = targetX;
+				guard.position.y = targetY;
+				guard.position.z = targetZ;
+
 				const face = new THREE.Vector3(targetX - center.x, 0, targetZ - center.z);
 				if (face.lengthSq() > 0.001)
 				{
 					face.normalize();
-					guard.lookAt(new THREE.Vector3(guard.position.x + face.x, guard.position.y, guard.position.z + face.z));
+					guard.lookAt(new THREE.Vector3(
+						guard.position.x + face.x,
+						guard.position.y,
+						guard.position.z + face.z
+					));
 				}
 				guard.setAnimation('idle', 0.2);
 			}
