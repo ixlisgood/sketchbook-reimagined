@@ -1156,12 +1156,11 @@ export class OnlineMultiplayer
 			{
 				if (!this.bodyguardsEnabled) return;
 
-				// Full physics Character + FollowTarget AI (same system as map citizens)
+				// Earlier physics AI: walk with gravity/collisions like map citizens
 				const guard = new Character(model);
 				guard.setModeratorSkin(true);
 				guard.setPlayerName('Bodyguard');
 				guard.setPlayerColor('#1a1a2e');
-				// Spawn already on the circle so they don't pile on the player
 				guard.setPosition(
 					origin.x + Math.cos(angle) * radius,
 					origin.y + 0.8,
@@ -1169,17 +1168,15 @@ export class OnlineMultiplayer
 				);
 				const target = this.bodyguardMarkers[index];
 				if (target === undefined) return;
-				guard.setBehaviour(new FollowTarget(target, 1.2));
-				// isRemote = false so charState runs and they can walk
-				// physicsEnabled stays true (default)
-				// NEVER set isFlying — that launches them
+				guard.setBehaviour(new FollowTarget(target, 1.3));
 				this.world.add(guard);
-				// Don't collide with the player (group 2) — was locking movement
+
+				// Hit world/cars, not the player (keeps you able to move)
 				if (guard.characterCapsule !== undefined)
 				{
 					const b = guard.characterCapsule.body;
 					b.collisionFilterGroup = 1;
-					b.collisionFilterMask = ~2; // everything except Characters
+					b.collisionFilterMask = ~2;
 					b.shapes.forEach((shape: any) =>
 					{
 						shape.collisionFilterGroup = 1;
@@ -1211,7 +1208,7 @@ export class OnlineMultiplayer
 		const cz = host.position.z;
 		const n = this.bodyguardMarkers.length;
 
-		// Circle slots the AI walks toward (FollowTarget + physics)
+		// Only move the walk targets — physics AI does the walking
 		this.bodyguardMarkers.forEach((marker, i) =>
 		{
 			const angle = (i / n) * Math.PI * 2;
@@ -1222,18 +1219,16 @@ export class OnlineMultiplayer
 			);
 		});
 
-		// Never give them fly mode; clamp glitch velocities only
 		this.bodyguards.forEach((guard) =>
 		{
 			guard.isFlying = false;
 			if (guard.characterCapsule !== undefined)
 			{
 				const v = guard.characterCapsule.body.velocity;
-				if (v.length() > 15) v.scale(0.2, v);
+				if (v.length() > 12) v.scale(0.25, v);
 			}
 		});
 
-		// Moderator must always be able to move
 		if (this.isModerator && this.localCharacter !== undefined)
 		{
 			this.localCharacter.isFrozen = false;
