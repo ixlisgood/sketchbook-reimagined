@@ -4,6 +4,7 @@ import { World } from '../world/World';
 import { Helicopter } from '../vehicles/Helicopter';
 import { Airplane } from '../vehicles/Airplane';
 import { Car } from '../vehicles/Car';
+import { PickupTruck } from '../vehicles/PickupTruck';
 import * as Utils from '../core/FunctionLibrary';
 import { Vehicle } from '../vehicles/Vehicle';
 import { Character } from '../characters/Character';
@@ -26,11 +27,17 @@ export class VehicleSpawnPoint implements ISpawnPoint
 
 	public spawn(loadingManager: LoadingManager, world: World): void
 	{
-		loadingManager.loadGLTF('build/assets/' + this.type + '.glb', (model: any) =>
+		const vehicleType = this.type === 'car' ? 'pickup' : this.type;
+		// airplane uses the custom white_mesh model
+		const assetType = vehicleType === 'airplane' ? 'white_mesh'
+			: (vehicleType === 'heli' ? 'heli' : 'car');
+
+		loadingManager.loadGLTF('build/assets/' + assetType + '.glb', (model: any) =>
 		{
-			let vehicle: Vehicle = this.getNewVehicleByType(model, this.type);
+			let vehicle: Vehicle = this.getNewVehicleByType(model, vehicleType);
 			vehicle.spawnPoint = this.object;
 			vehicle.userData.networkId = this.object.name || this.object.uuid;
+			vehicle.userData.vehicleType = vehicleType;
 
 			let worldPos = new THREE.Vector3();
 			let worldQuat = new THREE.Quaternion();
@@ -66,7 +73,6 @@ export class VehicleSpawnPoint implements ISpawnPoint
 									for (const nodeName in path.nodes) {
 										if (Object.prototype.hasOwnProperty.call(path.nodes, nodeName)) {
 											const node = path.nodes[nodeName];
-											
 											if (node.object.name === this.firstAINode)
 											{
 												character.setBehaviour(new FollowPath(node, 10));
@@ -76,10 +82,9 @@ export class VehicleSpawnPoint implements ISpawnPoint
 									}
 								}
 							}
-
 							if (!nodeFound)
 							{
-								console.error('Path node ' + this.firstAINode + 'not found.');
+								console.error('Path node ' + this.firstAINode + ' not found.');
 							}
 						}
 					}
@@ -92,6 +97,7 @@ export class VehicleSpawnPoint implements ISpawnPoint
 	{
 		switch (type)
 		{
+			case 'pickup': return new PickupTruck(model);
 			case 'car': return new Car(model);
 			case 'heli': return new Helicopter(model);
 			case 'airplane': return new Airplane(model);
