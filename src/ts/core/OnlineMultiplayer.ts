@@ -410,6 +410,7 @@ export class OnlineMultiplayer
 
 	private separateLocalFromPoint(x: number, z: number, radius: number): void
 	{
+		// Soft push only — never fully block the local player
 		if (this.localCharacter === undefined || this.localCharacter.characterCapsule === undefined) return;
 		const body = this.localCharacter.characterCapsule.body;
 		const dx = body.position.x - x;
@@ -417,15 +418,13 @@ export class OnlineMultiplayer
 		const dist = Math.sqrt(dx * dx + dz * dz);
 		if (dist < radius && dist > 0.001)
 		{
-			const push = (radius - dist) * 0.7;
+			const push = (radius - dist) * 0.25;
 			const nx = dx / dist;
 			const nz = dz / dist;
 			body.position.x += nx * push;
 			body.position.z += nz * push;
 			body.interpolatedPosition.x = body.position.x;
 			body.interpolatedPosition.z = body.position.z;
-			this.localCharacter.position.x = body.position.x;
-			this.localCharacter.position.z = body.position.z;
 		}
 	}
 
@@ -1162,10 +1161,11 @@ export class OnlineMultiplayer
 				guard.setModeratorSkin(true);
 				guard.setPlayerName('Bodyguard');
 				guard.setPlayerColor('#1a1a2e');
+				// Spawn already on the circle so they don't pile on the player
 				guard.setPosition(
-					origin.x + (Math.random() - 0.5) * 1.2,
+					origin.x + Math.cos(angle) * radius,
 					origin.y + 0.8,
-					origin.z + (Math.random() - 0.5) * 1.2
+					origin.z + Math.sin(angle) * radius
 				);
 				const target = this.bodyguardMarkers[index];
 				if (target === undefined) return;
@@ -1174,6 +1174,18 @@ export class OnlineMultiplayer
 				// physicsEnabled stays true (default)
 				// NEVER set isFlying — that launches them
 				this.world.add(guard);
+				// Don't collide with the player (group 2) — was locking movement
+				if (guard.characterCapsule !== undefined)
+				{
+					const b = guard.characterCapsule.body;
+					b.collisionFilterGroup = 1;
+					b.collisionFilterMask = ~2; // everything except Characters
+					b.shapes.forEach((shape: any) =>
+					{
+						shape.collisionFilterGroup = 1;
+						shape.collisionFilterMask = ~2;
+					});
+				}
 				this.bodyguards.push(guard);
 			});
 		}
@@ -1220,6 +1232,12 @@ export class OnlineMultiplayer
 				if (v.length() > 15) v.scale(0.2, v);
 			}
 		});
+
+		// Moderator must always be able to move
+		if (this.isModerator && this.localCharacter !== undefined)
+		{
+			this.localCharacter.isFrozen = false;
+		}
 
 		this.publishBodyguards();
 	}
