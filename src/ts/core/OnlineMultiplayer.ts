@@ -101,7 +101,7 @@ export class OnlineMultiplayer
 	/** Real controlled player only — never a mod clone */
 	private bodyguardHost: Character | null = null;
 	private bodyguardsRef: any;
-	private remoteBodyguards: { [ownerId: string]: Character[] } = {};
+	private remoteBodyguards: { [ownerId: string]: THREE.Group[] } = {};
 	private remoteBodyguardCollisions: { [ownerId: string]: CANNON.Body[] } = {};
 	private isInvisible: boolean = false;
 
@@ -229,14 +229,9 @@ export class OnlineMultiplayer
 							this.remoteBodyguardCollisions[ownerId] = [];
 						}
 						if (this.remoteBodyguards[ownerId][i] !== undefined) return;
-						const guard = new Character(model);
-						guard.isRemote = true;
-						guard.setPhysicsEnabled(false);
-						guard.setModeratorSkin(true);
-						guard.setPlayerName('Bodyguard');
-						guard.setPlayerColor('#1a1a2e');
+						const guard = this.createBodyguardVisual(model);
 						guard.position.set(state.x, state.y, state.z);
-						this.world.add(guard);
+						this.world.graphicsWorld.add(guard);
 						this.remoteBodyguards[ownerId][i] = guard;
 						const col = this.createRemotePlayerCollision();
 						col.position.set(state.x, state.y + 0.5, state.z);
@@ -245,14 +240,8 @@ export class OnlineMultiplayer
 					return;
 				}
 				const guard = guards[i];
-				guard.position.lerp(new THREE.Vector3(state.x, state.y, state.z), 0.35);
-				if (typeof state.qx === 'number')
-				{
-					guard.quaternion.slerp(
-						new THREE.Quaternion(state.qx, state.qy, state.qz, state.qw),
-						0.35
-					);
-				}
+				guard.position.set(state.x, state.y, state.z);
+				if (typeof state.ry === 'number') guard.rotation.y = state.ry;
 				if (colliders[i] !== undefined)
 				{
 					colliders[i].position.set(guard.position.x, guard.position.y + 0.5, guard.position.z);
@@ -263,7 +252,7 @@ export class OnlineMultiplayer
 			while (guards.length > list.length)
 			{
 				const g = guards.pop();
-				if (g !== undefined) this.world.remove(g);
+				if (g !== undefined) this.world.graphicsWorld.remove(g);
 				const c = colliders.pop();
 				if (c !== undefined) this.world.physicsWorld.remove(c);
 			}
@@ -272,11 +261,31 @@ export class OnlineMultiplayer
 		Object.keys(this.remoteBodyguards).forEach((ownerId) =>
 		{
 			if (activeOwners[ownerId]) return;
-			(this.remoteBodyguards[ownerId] || []).forEach((g) => this.world.remove(g));
+			(this.remoteBodyguards[ownerId] || []).forEach((g) => this.world.graphicsWorld.remove(g));
 			(this.remoteBodyguardCollisions[ownerId] || []).forEach((c) => this.world.physicsWorld.remove(c));
 			delete this.remoteBodyguards[ownerId];
 			delete this.remoteBodyguardCollisions[ownerId];
 		});
+	}
+
+	private createBodyguardVisual(model: any): THREE.Group
+	{
+		const root = new THREE.Group();
+		const scene = (model.scene || model).clone(true);
+		scene.position.y = -0.57;
+		scene.traverse((node: any) =>
+		{
+			if (node.isMesh && node.material)
+			{
+				const mats = Array.isArray(node.material) ? node.material : [node.material];
+				mats.forEach((mat: any) =>
+				{
+					if (mat.color) mat.color.set('#030507');
+				});
+			}
+		});
+		root.add(scene);
+		return root;
 	}
 
 	private updateRemotePlayers(players: { [id: string]: OnlinePlayerState }): void
@@ -1115,23 +1124,24 @@ export class OnlineMultiplayer
 		{
 			this.clearBodyguards();
 			this.bodyguardsEnabled = false;
+			this.publishBodyguards();
 			return;
 		}
 		this.bodyguardsEnabled = true;
-		this.spawnBodyguards(12);
+		this.spawnBodyguards(10);
 	}
 
 	private spawnBodyguards(count: number): void
 	{
 		this.clearBodyguards();
-		if (this.localCharacter === undefined) return;
+		const host = this.bodyguardHost || this.localCharacter;
+		if (host === undefined || host === null) return;
 
-		const origin = this.localCharacter.position.clone();
+		const origin = host.position.clone();
 		const radius = 2.8;
 
 		for (let i = 0; i < count; i++)
 		{
-			// Each guard gets a fixed angle on the circle
 			const angle = (i / count) * Math.PI * 2;
 			const marker = new THREE.Object3D();
 			marker.position.set(
@@ -1145,37 +1155,25 @@ export class OnlineMultiplayer
 			const index = i;
 			this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
 			{
-				if (!this.bodyguardsEnabled || this.localCharacter === undefined) return;
+				if (!this.bodyguardsEnabled) return;
 
+				// Full physics Character + FollowTarget AI (same system as map citizens)
 				const guard = new Character(model);
 				guard.setModeratorSkin(true);
 				guard.setPlayerName('Bodyguard');
 				guard.setPlayerColor('#1a1a2e');
-
-				// Spawn near the player; they walk out to their circle slot
 				guard.setPosition(
-					origin.x + (Math.random() - 0.5) * 1.5,
-					origin.y + 0.5,
-					origin.z + (Math.random() - 0.5) * 1.5
+					origin.x + (Math.random() - 0.5) * 1.2,
+					origin.y + 0.8,
+					origin.z + (Math.random() - 0.5) * 1.2
 				);
-
 				const target = this.bodyguardMarkers[index];
 				if (target === undefined) return;
-				guard.userData.bodyguardMarker = target;
-				guard.setBehaviour(new FollowTarget(target, 1.0));
+				guard.setBehaviour(new FollowTarget(target, 1.2));
+				// isRemote = false so charState runs and they can walk
+				// physicsEnabled stays true (default)
+				// NEVER set isFlying — that launches them
 				this.world.add(guard);
-				// Collide with cars and players
-				if (guard.characterCapsule !== undefined)
-				{
-					const b = guard.characterCapsule.body;
-					b.collisionFilterGroup = 1;
-					b.collisionFilterMask = -1;
-					b.shapes.forEach((shape: any) =>
-					{
-						shape.collisionFilterGroup = 1;
-						shape.collisionFilterMask = -1;
-					});
-				}
 				this.bodyguards.push(guard);
 			});
 		}
@@ -1191,7 +1189,6 @@ export class OnlineMultiplayer
 
 	private updateBodyguards(timeStep: number): void
 	{
-		// Circle the real controlled character only — never a clone
 		const host = this.bodyguardHost || this.localCharacter;
 		if (!this.bodyguardsEnabled || host === undefined || host === null) return;
 		if (this.bodyguardMarkers.length === 0) return;
@@ -1201,8 +1198,8 @@ export class OnlineMultiplayer
 		const cy = host.position.y;
 		const cz = host.position.z;
 		const n = this.bodyguardMarkers.length;
-		const flying = host.isFlying === true;
 
+		// Circle slots the AI walks toward (FollowTarget + physics)
 		this.bodyguardMarkers.forEach((marker, i) =>
 		{
 			const angle = (i / n) * Math.PI * 2;
@@ -1213,41 +1210,17 @@ export class OnlineMultiplayer
 			);
 		});
 
+		// Never give them fly mode; clamp glitch velocities only
 		this.bodyguards.forEach((guard) =>
 		{
-			// Never use Character.isFlying — that fly controller launches them chaotically
 			guard.isFlying = false;
-			const marker = guard.userData.bodyguardMarker as THREE.Object3D;
-			if (guard.characterCapsule === undefined || marker === undefined) return;
-
-			const body = guard.characterCapsule.body;
-
-			if (flying)
+			if (guard.characterCapsule !== undefined)
 			{
-				// Carry them with you in the circle (position lock, no fly physics)
-				const t = marker.position;
-				body.velocity.set(0, 0, 0);
-				body.angularVelocity.set(0, 0, 0);
-				body.force.set(0, 0, 0);
-				body.position.set(t.x, t.y, t.z);
-				body.interpolatedPosition.set(t.x, t.y, t.z);
-				guard.position.set(t.x, t.y, t.z);
-				guard.triggerAction('up', false);
-				guard.triggerAction('run', false);
-				guard.setAnimation('idle', 0.1);
-			}
-			else
-			{
-				// Ground: kill runaway velocities from physics glitches
-				if (body.velocity.length() > 10)
-				{
-					body.velocity.set(0, 0, 0);
-					body.angularVelocity.set(0, 0, 0);
-				}
+				const v = guard.characterCapsule.body.velocity;
+				if (v.length() > 15) v.scale(0.2, v);
 			}
 		});
 
-		// Sync so other players can see bodyguards
 		this.publishBodyguards();
 	}
 }
