@@ -104,6 +104,7 @@ export class OnlineMultiplayer
 	private remoteBodyguards: { [ownerId: string]: THREE.Group[] } = {};
 	private remoteBodyguardCollisions: { [ownerId: string]: CANNON.Body[] } = {};
 	private isInvisible: boolean = false;
+	private joinTimeMs: number = 0;
 
 	constructor(world: World, loadingManager: LoadingManager)
 	{
@@ -973,6 +974,7 @@ export class OnlineMultiplayer
 		if (this.localCharacter !== undefined) this.localCharacter.setModeratorSkin(this.isModerator);
 		this.lobbyId = (input.value || 'main').toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 24) || 'main';
 		this.playerId = this.database.ref().push().key;
+		this.joinTimeMs = Date.now();
 		const lobbyRef = this.database.ref(OnlineMultiplayer.roomName + '/lobbies/' + this.lobbyId);
 		this.controlRef = lobbyRef.child('control');
 		this.commandRef = lobbyRef.child('commands');
@@ -982,6 +984,19 @@ export class OnlineMultiplayer
 		this.playerRef.onDisconnect().remove();
 		this.bodyguardsRef = lobbyRef.child('bodyguards').child(this.playerId);
 		this.bodyguardsRef.onDisconnect().remove();
+
+		// Clear stuck freeze from a previous session so joining doesn't lock movement
+		if (this.localCharacter !== undefined)
+		{
+			this.localCharacter.isFrozen = false;
+			this.localCharacter.isSlowed = false;
+			this.localCharacter.takeControl();
+		}
+		if (this.isModerator)
+		{
+			this.controlRef.update({ freeze: false, slow: false }).catch(() => undefined);
+		}
+
 		lobbyRef.child('bodyguards').on('value', (snapshot) => this.syncRemoteBodyguards(snapshot.val() || {}));
 		this.playersRef.on('value', (snapshot) => this.updateRemotePlayers(snapshot.val() || {}));
 		this.controlRef.on('value', (snapshot) =>
@@ -989,9 +1004,9 @@ export class OnlineMultiplayer
 			const data = snapshot.val() || {};
 			this.freezeEveryone = data.freeze === true;
 			this.slowEveryone = data.slow === true;
-			// Never freeze or slow the local moderator
 			if (this.localCharacter !== undefined)
 			{
+				// Moderator is never frozen/slowed by lobby control
 				this.localCharacter.isFrozen = this.freezeEveryone && !this.isModerator;
 				this.localCharacter.isSlowed = this.slowEveryone && !this.isModerator;
 			}
@@ -1003,10 +1018,14 @@ export class OnlineMultiplayer
 				remote.character.isSlowed = this.slowEveryone && !isMod;
 			});
 		});
+		// Only apply NEW commands after join — Firebase child_added replays history and was freezing players
 		this.commandRef.on('child_added', (snapshot) =>
 		{
 			const command = snapshot.val();
-			if (command?.command && command?.target) this.applyCommand(command.command, command.target, command);
+			if (!command?.command || !command?.target) return;
+			const at = typeof command.at === 'number' ? command.at : 0;
+			if (at > 0 && at < this.joinTimeMs - 2000) return;
+			this.applyCommand(command.command, command.target, command);
 		});
 		this.chatRef.on('value', (snapshot) =>
 		{
