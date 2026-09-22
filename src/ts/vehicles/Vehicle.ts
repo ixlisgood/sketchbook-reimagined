@@ -12,6 +12,7 @@ import { CollisionGroups } from '../enums/CollisionGroups';
 import { SwitchingSeats } from '../characters/character_states/vehicles/SwitchingSeats';
 import { EntityType } from '../enums/EntityType';
 import { IWorldEntity } from '../interfaces/IWorldEntity';
+import { SeatType } from '../enums/SeatType';
 
 export abstract class Vehicle extends THREE.Object3D implements IWorldEntity
 {
@@ -445,10 +446,34 @@ export abstract class Vehicle extends THREE.Object3D implements IWorldEntity
 		if (this.collision.shapes.length === 0)
 		{
 			console.warn('Vehicle ' + typeof(this) + ' has no collision data.');
+			const box = new THREE.Box3().setFromObject(gltf.scene);
+			const size = new THREE.Vector3();
+			const center = new THREE.Vector3();
+			box.getSize(size);
+			box.getCenter(center);
+			if (size.lengthSq() < 0.01) size.set(2.4, 0.8, 3.2);
+			const phys = new CANNON.Box(new CANNON.Vec3(
+				Math.max(0.4, size.x * 0.5),
+				Math.max(0.25, size.y * 0.5),
+				Math.max(0.4, size.z * 0.5)
+			));
+			phys.collisionFilterMask = ~CollisionGroups.TrimeshColliders;
+			this.collision.addShape(phys, new CANNON.Vec3(center.x, center.y, center.z));
 		}
 		if (this.seats.length === 0)
 		{
 			console.warn('Vehicle ' + typeof(this) + ' has no seats.');
+			const seatObj = new THREE.Object3D();
+			seatObj.name = 'Seat_driver';
+			gltf.scene.add(seatObj);
+			const entry = new THREE.Object3D();
+			entry.position.set(1.4, 0, 0);
+			gltf.scene.add(entry);
+			const seat = new VehicleSeat(this, seatObj, gltf);
+			seat.type = SeatType.Driver;
+			seat.entryPoints = [entry];
+			this.seats.push(seat);
+			this.connectSeats();
 		}
 		else
 		{
