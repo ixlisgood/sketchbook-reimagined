@@ -30,6 +30,9 @@ export declare class OnlineMultiplayer {
     private chatPanel;
     private centerCursor;
     private currentTargetName;
+    private currentTargetObject;
+    private currentTargetRemoteId;
+    private flingClickHandler;
     private modClones;
     private modCloneIndex;
     private cloneKeyHandler;
@@ -42,12 +45,14 @@ export declare class OnlineMultiplayer {
     private remoteBodyguards;
     private remoteBodyguardCollisions;
     private isInvisible;
+    private joinTimeMs;
     constructor(world: World, loadingManager: LoadingManager);
     updateOrder: number;
     setLocalCharacter(character: Character): void;
     update(timeStep: number): void;
     private publishBodyguards;
     private syncRemoteBodyguards;
+    private createBodyguardVisual;
     private updateRemotePlayers;
     private createRemotePlayerCollision;
     private syncRemotePlayerCollision;
@@ -65,6 +70,8 @@ export declare class OnlineMultiplayer {
     private sendCommand;
     private applyCommand;
     private updateTargetCursor;
+    private bindModeratorFlingClick;
+    private flingCurrentTarget;
     private joinLobby;
     private bindModeratorCloneKeys;
     private spawnModeratorClone;
