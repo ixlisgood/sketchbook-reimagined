@@ -388,9 +388,20 @@ export abstract class Vehicle extends THREE.Object3D implements IWorldEntity
 
 	public readVehicleData(gltf: any): void
 	{
+		const junk: THREE.Object3D[] = [];
+		gltf.scene.traverse((child: any) =>
+		{
+			// Custom F-16 / white_mesh can contain empty nodes — those crash WebGL (reading 'frame')
+			if ((child.isMesh || child.isSkinnedMesh || child.isLine || child.isPoints) && child.geometry === undefined)
+			{
+				junk.push(child);
+			}
+		});
+		junk.forEach((node) => { if (node.parent) node.parent.remove(node); });
+
 		gltf.scene.traverse((child) => {
 
-			if (child.isMesh)
+			if ((child as any).isMesh && (child as any).geometry)
 			{
 				Utils.setupMeshProperties(child);
 
@@ -445,7 +456,6 @@ export abstract class Vehicle extends THREE.Object3D implements IWorldEntity
 
 		if (this.collision.shapes.length === 0)
 		{
-			console.warn('Vehicle ' + typeof(this) + ' has no collision data.');
 			const box = new THREE.Box3().setFromObject(gltf.scene);
 			const size = new THREE.Vector3();
 			const center = new THREE.Vector3();
@@ -462,7 +472,6 @@ export abstract class Vehicle extends THREE.Object3D implements IWorldEntity
 		}
 		if (this.seats.length === 0)
 		{
-			console.warn('Vehicle ' + typeof(this) + ' has no seats.');
 			const seatObj = new THREE.Object3D();
 			seatObj.name = 'Seat_driver';
 			gltf.scene.add(seatObj);
