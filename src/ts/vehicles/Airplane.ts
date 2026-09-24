@@ -73,30 +73,27 @@ export class Airplane extends Vehicle implements IControllable, IWorldEntity
 
 		// F-16 export is X-forward / wrong roll — physics uses +Z forward
 		gltf.scene.rotation.set(0, -Math.PI / 2, 0);
-		gltf.scene.scale.setScalar(4.6);
-		gltf.scene.position.y = 1.6;
+		gltf.scene.scale.setScalar(2.2);
+		gltf.scene.position.y = 0.9;
 		gltf.scene.traverse((child: any) =>
 		{
 			if (!child.isMesh || !child.material) return;
-			const src = Array.isArray(child.material) ? child.material[0] : child.material;
-			const mat = new THREE.MeshPhongMaterial({
+			child.material = new THREE.MeshPhongMaterial({
 				color: 0xffffff,
-				shininess: 50,
-				specular: 0x444444,
-				skinning: child.isSkinnedMesh === true,
-				map: src && src.map ? src.map : null
+				emissive: 0x777777,
+				shininess: 80,
+				specular: 0x555555,
+				skinning: child.isSkinnedMesh === true
 			});
-			if (mat.map) mat.map.anisotropy = 4;
-			child.material = mat;
 			child.castShadow = true;
 			child.receiveShadow = true;
 		});
 
 		if (this.collision.shapes.length === 0)
 		{
-			const phys = new CANNON.Box(new CANNON.Vec3(5.5, 1.1, 11.0));
+			const phys = new CANNON.Box(new CANNON.Vec3(3.2, 0.7, 6.5));
 			phys.collisionFilterMask = ~CollisionGroups.TrimeshColliders;
-			this.collision.addShape(phys, new CANNON.Vec3(0, 1.4, 0));
+			this.collision.addShape(phys, new CANNON.Vec3(0, 0.9, 0));
 			this.collision.mass = 40;
 			this.collision.updateMassProperties();
 		}

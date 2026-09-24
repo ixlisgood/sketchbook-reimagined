@@ -42,7 +42,7 @@ export class VehicleSpawnPoint implements ISpawnPoint
 			this.object.getWorldPosition(worldPos);
 			this.object.getWorldQuaternion(worldQuat);
 
-			const lift = vehicleType === 'airplane' ? 5.2 : 1;
+			const lift = vehicleType === 'airplane' ? 3.2 : 1;
 			vehicle.setPosition(worldPos.x, worldPos.y + lift, worldPos.z);
 			vehicle.collision.quaternion.copy(Utils.cannonQuat(worldQuat));
 			world.add(vehicle);
