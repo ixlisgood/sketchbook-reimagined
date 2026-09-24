@@ -57,9 +57,43 @@ export class Airplane extends Vehicle implements IControllable, IWorldEntity
 	/** Custom F-16 mesh has no sketchbook rotor/seat/collision rig — add defaults. */
 	private ensureJetSetup(gltf: any): void
 	{
+		const junk: THREE.Object3D[] = [];
+		gltf.scene.traverse((child: any) =>
+		{
+			if ((child.isMesh || child.isSkinnedMesh || child.isLine || child.isPoints) && !child.geometry)
+			{
+				junk.push(child);
+			}
+			if (child.isSkinnedMesh)
+			{
+				child.frustumCulled = false;
+			}
+		});
+		junk.forEach((node) => { if (node.parent) node.parent.remove(node); });
+
+		// F-16 export is X-forward / wrong roll — physics uses +Z forward
+		gltf.scene.rotation.set(0, -Math.PI / 2, 0);
+		gltf.scene.scale.setScalar(2.8);
+		gltf.scene.traverse((child: any) =>
+		{
+			if (!child.isMesh || !child.material) return;
+			const src = Array.isArray(child.material) ? child.material[0] : child.material;
+			const mat = new THREE.MeshPhongMaterial({
+				color: 0xffffff,
+				shininess: 50,
+				specular: 0x444444,
+				skinning: child.isSkinnedMesh === true,
+				map: src && src.map ? src.map : null
+			});
+			if (mat.map) mat.map.anisotropy = 4;
+			child.material = mat;
+			child.castShadow = true;
+			child.receiveShadow = true;
+		});
+
 		if (this.collision.shapes.length === 0)
 		{
-			const phys = new CANNON.Box(new CANNON.Vec3(2.4, 0.55, 5.0));
+			const phys = new CANNON.Box(new CANNON.Vec3(4.0, 0.9, 8.0));
 			phys.collisionFilterMask = ~CollisionGroups.TrimeshColliders;
 			this.collision.addShape(phys);
 			this.collision.mass = 40;
@@ -71,11 +105,11 @@ export class Airplane extends Vehicle implements IControllable, IWorldEntity
 			const scene = gltf.scene;
 			const seatObj = new THREE.Object3D();
 			seatObj.name = 'seat_f16';
-			seatObj.position.set(0, 0.55, 1.1);
+			seatObj.position.set(0, 0.9, 1.6);
 			seatObj.userData = { data: 'seat', seat_type: 'driver', entry_points: 'entry_f16' };
 			const entry = new THREE.Object3D();
 			entry.name = 'entry_f16';
-			entry.position.set(1.6, 0, 1.1);
+			entry.position.set(2.4, 0, 1.6);
 			scene.add(seatObj);
 			scene.add(entry);
 			this.seats.push(new VehicleSeat(this, seatObj, gltf));

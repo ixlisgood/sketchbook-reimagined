@@ -4,7 +4,6 @@ import { World } from '../world/World';
 import { Helicopter } from '../vehicles/Helicopter';
 import { Airplane } from '../vehicles/Airplane';
 import { Car } from '../vehicles/Car';
-import { PickupTruck } from '../vehicles/PickupTruck';
 import * as Utils from '../core/FunctionLibrary';
 import { Vehicle } from '../vehicles/Vehicle';
 import { Character } from '../characters/Character';
@@ -27,8 +26,7 @@ export class VehicleSpawnPoint implements ISpawnPoint
 
 	public spawn(loadingManager: LoadingManager, world: World): void
 	{
-		const vehicleType = this.type === 'car' ? 'pickup' : this.type;
-		// airplane uses the custom white_mesh model
+		const vehicleType = this.type === 'pickup' ? 'car' : this.type;
 		const assetType = vehicleType === 'airplane' ? 'white_mesh'
 			: (vehicleType === 'heli' ? 'heli' : 'car');
 
@@ -97,7 +95,7 @@ export class VehicleSpawnPoint implements ISpawnPoint
 	{
 		switch (type)
 		{
-			case 'pickup': return new PickupTruck(model);
+			case 'pickup': return new Car(model);
 			case 'car': return new Car(model);
 			case 'heli': return new Helicopter(model);
 			case 'airplane': return new Airplane(model);
