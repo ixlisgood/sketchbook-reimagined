@@ -73,7 +73,8 @@ export class Airplane extends Vehicle implements IControllable, IWorldEntity
 
 		// F-16 export is X-forward / wrong roll — physics uses +Z forward
 		gltf.scene.rotation.set(0, -Math.PI / 2, 0);
-		gltf.scene.scale.setScalar(2.8);
+		gltf.scene.scale.setScalar(4.6);
+		gltf.scene.position.y = 1.6;
 		gltf.scene.traverse((child: any) =>
 		{
 			if (!child.isMesh || !child.material) return;
@@ -93,9 +94,9 @@ export class Airplane extends Vehicle implements IControllable, IWorldEntity
 
 		if (this.collision.shapes.length === 0)
 		{
-			const phys = new CANNON.Box(new CANNON.Vec3(4.0, 0.9, 8.0));
+			const phys = new CANNON.Box(new CANNON.Vec3(5.5, 1.1, 11.0));
 			phys.collisionFilterMask = ~CollisionGroups.TrimeshColliders;
-			this.collision.addShape(phys);
+			this.collision.addShape(phys, new CANNON.Vec3(0, 1.4, 0));
 			this.collision.mass = 40;
 			this.collision.updateMassProperties();
 		}
@@ -105,11 +106,11 @@ export class Airplane extends Vehicle implements IControllable, IWorldEntity
 			const scene = gltf.scene;
 			const seatObj = new THREE.Object3D();
 			seatObj.name = 'seat_f16';
-			seatObj.position.set(0, 0.9, 1.6);
+			seatObj.position.set(0, 1.4, 2.0);
 			seatObj.userData = { data: 'seat', seat_type: 'driver', entry_points: 'entry_f16' };
 			const entry = new THREE.Object3D();
 			entry.name = 'entry_f16';
-			entry.position.set(2.4, 0, 1.6);
+			entry.position.set(3.2, 0.2, 2.0);
 			scene.add(seatObj);
 			scene.add(entry);
 			this.seats.push(new VehicleSeat(this, seatObj, gltf));
@@ -236,20 +237,20 @@ export class Airplane extends Vehicle implements IControllable, IWorldEntity
 			body.angularVelocity.z += forward.z * turn * 1.2;
 		}
 
-		let speedModifier = 0.08;
+		let speedModifier = 0.04;
 		if (plane.actions.throttle.isPressed && !plane.actions.brake.isPressed)
 		{
-			speedModifier = 0.85;
+			speedModifier = 0.38;
 		}
 		else if (!plane.actions.throttle.isPressed && plane.actions.brake.isPressed)
 		{
-			speedModifier = -0.12;
+			speedModifier = -0.1;
 		}
 		else if (this.rayCastVehicle.numWheelsOnGround > 0)
 		{
 			speedModifier = 0;
 		}
-		const boostMul = this.userData.speedBoost === true ? 3.2 : 2.2;
+		const boostMul = this.userData.speedBoost === true ? 1.8 : 1.25;
 
 		body.velocity.x += (velLength1 * this.lastDrag + speedModifier) * forward.x * this.enginePower * boostMul;
 		body.velocity.y += (velLength1 * this.lastDrag + speedModifier) * forward.y * this.enginePower * boostMul;
