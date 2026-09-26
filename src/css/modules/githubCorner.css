@@ -1,12 +1,7 @@
 /* GitHub corner */
 
 .github-corner {
-	position: absolute;
-	left: 0;
-	top: 0;
-	width: 120px;
-	height: 120px;
-	overflow: hidden;
+	display: none !important;
 }
 
 .github-corner a {

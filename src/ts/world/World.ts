@@ -162,17 +162,7 @@ export class World
 			{
 				this.update(1, 1);
 				this.setTimeScale(1);
-	
-				Swal.fire({
-					title: 'Welcome to Sketchbook!',
-					text: 'Feel free to explore the world and interact with available vehicles. There are also various scenarios ready to launch from the right panel.',
-					footer: '<a href="https://github.com/swift502/Sketchbook" target="_blank">GitHub page</a><a href="https://discord.gg/fGuEqCe" target="_blank">Discord server</a>',
-					confirmButtonText: 'Okay',
-					buttonsStyling: false,
-					onClose: () => {
-						UIManager.setUserInterfaceVisible(true);
-					}
-				});
+				UIManager.setUserInterfaceVisible(true);
 			};
 			loadingManager.loadGLTF(worldScenePath, (gltf) =>
 				{
@@ -281,7 +271,14 @@ export class World
 		timeStep = Math.min(timeStep, 1 / 30);    // min 30 fps
 
 		// Logic
-		world.update(timeStep, unscaledTimeStep);
+		try
+		{
+			world.update(timeStep, unscaledTimeStep);
+		}
+		catch (err)
+		{
+			console.warn('update skipped', err);
+		}
 
 		// Measuring logic time
 		this.logicDelta = this.clock.getDelta();
@@ -295,12 +292,39 @@ export class World
 		this.stats.end();
 		this.stats.begin();
 
-		// Actual rendering with a FXAA ON/OFF switch
-		if (this.params.FXAA) this.composer.render();
-		else this.renderer.render(this.graphicsWorld, this.camera);
+		try
+		{
+			this.stripBrokenRenderables(this.graphicsWorld);
+			if (this.params.FXAA) this.composer.render();
+			else this.renderer.render(this.graphicsWorld, this.camera);
+		}
+		catch (err)
+		{
+			// Don't freeze the game loop if a lobby/network mesh is bad
+			console.warn('render skipped', err);
+		}
 
-		// Measuring render time
 		this.renderDelta = this.clock.getDelta();
+	}
+
+	private stripBrokenRenderables(root: THREE.Object3D): void
+	{
+		const kids = root.children;
+		for (let i = kids.length - 1; i >= 0; i--)
+		{
+			const child: any = kids[i];
+			if (child === undefined || child === null)
+			{
+				kids.splice(i, 1);
+				continue;
+			}
+			if ((child.isMesh || child.isSkinnedMesh || child.isLine || child.isPoints) && child.geometry === undefined)
+			{
+				root.remove(child);
+				continue;
+			}
+			if (child.children && child.children.length) this.stripBrokenRenderables(child);
+		}
 	}
 
 	public setTimeScale(value: number): void
@@ -493,7 +517,7 @@ export class World
 		// Loader
 		$(`	<div id="loading-screen">
 				<div id="loading-screen-background"></div>
-				<h1 id="main-title" class="sb-font">Sketchbook 0.5</h1>
+				<h1 id="main-title" class="sb-font">Sketchbook 1.0</h1>
 				<div class="cubeWrap">
 					<div class="cube">
 						<div class="faces1"></div>
@@ -506,17 +530,6 @@ export class World
 
 		// UI
 		$(`	<div id="ui-container" style="display: none;">
-				<div class="github-corner">
-					<a href="https://github.com/swift502/Sketchbook" target="_blank" title="Fork me on GitHub">
-						<svg viewbox="0 0 100 100" fill="currentColor">
-							<title>Fork me on GitHub</title>
-							<path d="M0 0v100h100V0H0zm60 70.2h.2c1 2.7.3 4.7 0 5.2 1.4 1.4 2 3 2 5.2 0 7.4-4.4 9-8.7 9.5.7.7 1.3 2
-							1.3 3.7V99c0 .5 1.4 1 1.4 1H44s1.2-.5 1.2-1v-3.8c-3.5 1.4-5.2-.8-5.2-.8-1.5-2-3-2-3-2-2-.5-.2-1-.2-1
-							2-.7 3.5.8 3.5.8 2 1.7 4 1 5 .3.2-1.2.7-2 1.2-2.4-4.3-.4-8.8-2-8.8-9.4 0-2 .7-4 2-5.2-.2-.5-1-2.5.2-5
-							0 0 1.5-.6 5.2 1.8 1.5-.4 3.2-.6 4.8-.6 1.6 0 3.3.2 4.8.7 2.8-2 4.4-2 5-2z"></path>
-						</svg>
-					</a>
-				</div>
 				<div class="left-panel">
 					<div id="controls" class="panel-segment flex-bottom"></div>
 				</div>
