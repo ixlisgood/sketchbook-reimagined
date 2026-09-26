@@ -10,6 +10,7 @@ import { SpringSimulator } from '../physics/spring_simulation/SpringSimulator';
 import * as Utils from '../core/FunctionLibrary';
 import { EntityType } from '../enums/EntityType';
 import { CollisionGroups } from '../enums/CollisionGroups';
+import { SeatType } from '../enums/SeatType';
 
 export class Airplane extends Vehicle implements IControllable, IWorldEntity
 {
@@ -71,18 +72,19 @@ export class Airplane extends Vehicle implements IControllable, IWorldEntity
 		});
 		junk.forEach((node) => { if (node.parent) node.parent.remove(node); });
 
-		// F-16 export is X-forward / wrong roll — physics uses +Z forward
-		gltf.scene.rotation.set(0, -Math.PI / 2, 0);
+		// Visual nose must match physics +Z. Previous -90° faced you backwards.
+		gltf.scene.rotation.set(0, Math.PI / 2, 0);
 		gltf.scene.scale.setScalar(2.2);
 		gltf.scene.position.y = 0.9;
 		gltf.scene.traverse((child: any) =>
 		{
-			if (!child.isMesh || !child.material) return;
-			child.material = new THREE.MeshPhongMaterial({
+			if (!child.isMesh) return;
+			if (child.geometry && child.geometry.removeAttribute)
+			{
+				child.geometry.removeAttribute('color');
+			}
+			child.material = new THREE.MeshBasicMaterial({
 				color: 0xffffff,
-				emissive: 0x777777,
-				shininess: 80,
-				specular: 0x555555,
 				skinning: child.isSkinnedMesh === true
 			});
 			child.castShadow = true;
@@ -98,19 +100,28 @@ export class Airplane extends Vehicle implements IControllable, IWorldEntity
 			this.collision.updateMassProperties();
 		}
 
+		if (this.seats.length > 0)
+		{
+			this.seats.forEach((s) =>
+			{
+				if (s.seatPointObject && s.seatPointObject.parent) s.seatPointObject.parent.remove(s.seatPointObject);
+			});
+			this.seats = [];
+		}
 		if (this.seats.length === 0)
 		{
-			const scene = gltf.scene;
 			const seatObj = new THREE.Object3D();
 			seatObj.name = 'seat_f16';
-			seatObj.position.set(0, 1.4, 2.0);
-			seatObj.userData = { data: 'seat', seat_type: 'driver', entry_points: 'entry_f16' };
+			seatObj.position.set(0, 1.1, 0.6);
+			this.add(seatObj);
 			const entry = new THREE.Object3D();
 			entry.name = 'entry_f16';
-			entry.position.set(3.2, 0.2, 2.0);
-			scene.add(seatObj);
-			scene.add(entry);
-			this.seats.push(new VehicleSeat(this, seatObj, gltf));
+			entry.position.set(2.8, 0.2, 0.6);
+			this.add(entry);
+			const seat = new VehicleSeat(this, seatObj, gltf);
+			seat.type = SeatType.Driver;
+			seat.entryPoints = [entry];
+			this.seats.push(seat);
 		}
 	}
 
