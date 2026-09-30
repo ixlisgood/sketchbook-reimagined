@@ -120,6 +120,7 @@ export class OnlineMultiplayer
 		}
 
 		this.database = firebase.database();
+		this.ensureModeratorAccount();
 		this.createLobbyMenu();
 		this.world.registerUpdatable(this);
 	}
@@ -664,20 +665,40 @@ export class OnlineMultiplayer
 	{
 		const menu = document.createElement('div');
 		menu.id = 'lobby-menu';
-		menu.innerHTML = '<div class="lobby-panel">' +
-			'<h1>Sketchbook 1.0</h1>' +
+		menu.innerHTML = '<div class="lobby-panel" id="login-panel">' +
+			'<h1>Sketchbook</h1>' +
+			'<label for="auth-user">Username</label>' +
+			'<input id="auth-user" maxlength="32" placeholder="Username" />' +
+			'<label for="auth-pass">Password</label>' +
+			'<input id="auth-pass" type="password" maxlength="32" placeholder="Password" />' +
+			'<button id="auth-login">Log in</button>' +
+			'<button id="auth-create" class="secondary-btn">Create account</button>' +
+			'<div id="auth-status"></div>' +
+		'</div>' +
+		'<div class="lobby-panel" id="join-panel" style="display:none">' +
+			'<h1>Join a lobby</h1>' +
+			'<div id="logged-as"></div>' +
 			'<label for="lobby-name">Lobby</label>' +
 			'<input id="lobby-name" value="mail" maxlength="24" />' +
-			'<label for="player-name">Username</label>' +
-			'<input id="player-name" maxlength="32" placeholder="Choose a username" />' +
 			'<div id="lobby-list"></div>' +
-			'<label>Player color</label>' +
+			'<label>Skin</label>' +
 			'<div class="color-list">' +
-				'<button class="player-color" data-color="#2f80ed" style="background:#2f80ed"></button>' +
-				'<button class="player-color" data-color="#e74c3c" style="background:#e74c3c"></button>' +
-				'<button class="player-color" data-color="#27ae60" style="background:#27ae60"></button>' +
-				'<button class="player-color" data-color="#f1c40f" style="background:#f1c40f"></button>' +
-				'<button class="player-color" data-color="#9b59b6" style="background:#9b59b6"></button>' +
+				'<button class="player-color" data-color="#2f80ed" title="Blue" style="background:#2f80ed"></button>' +
+				'<button class="player-color" data-color="#e74c3c" title="Red" style="background:#e74c3c"></button>' +
+				'<button class="player-color" data-color="#27ae60" title="Green" style="background:#27ae60"></button>' +
+				'<button class="player-color" data-color="#f1c40f" title="Yellow" style="background:#f1c40f"></button>' +
+				'<button class="player-color" data-color="#9b59b6" title="Purple" style="background:#9b59b6"></button>' +
+				'<button class="player-color" data-color="#ff7f11" title="Orange" style="background:#ff7f11"></button>' +
+				'<button class="player-color" data-color="#00d2ff" title="Cyan" style="background:#00d2ff"></button>' +
+				'<button class="player-color" data-color="#ff4d9d" title="Pink" style="background:#ff4d9d"></button>' +
+				'<button class="player-color" data-color="#ffffff" title="White" style="background:#ffffff"></button>' +
+				'<button class="player-color" data-color="#111111" title="Black" style="background:#111111"></button>' +
+				'<button class="player-color" data-color="#ffd700" title="Gold" style="background:#ffd700"></button>' +
+				'<button class="player-color" data-color="#7fff00" title="Lime" style="background:#7fff00"></button>' +
+				'<button class="player-color" data-color="#8b4513" title="Brown" style="background:#8b4513"></button>' +
+				'<button class="player-color" data-color="#1abc9c" title="Teal" style="background:#1abc9c"></button>' +
+				'<button class="player-color" data-color="#e67e22" title="Copper" style="background:#e67e22"></button>' +
+				'<button class="player-color" data-color="#c0c0c0" title="Silver" style="background:#c0c0c0"></button>' +
 			'</div>' +
 			'<button id="join-lobby">Join lobby</button>' +
 			'<div id="lobby-status"></div>' +
@@ -706,12 +727,127 @@ export class OnlineMultiplayer
 			};
 		});
 		(menu.querySelector('.player-color') as HTMLElement).classList.add('selected');
-		const nameInput = document.getElementById('player-name') as HTMLInputElement;
-		nameInput.oninput = () =>
-		{
-			this.moderatorMenu.style.display = nameInput.value.trim().toLowerCase() === 'charles cheatham 67' ? 'block' : 'none';
-		};
+		(document.getElementById('auth-login') as HTMLElement).onclick = () => this.loginAccount();
+		(document.getElementById('auth-create') as HTMLElement).onclick = () => this.createAccount();
 		(document.getElementById('join-lobby') as HTMLElement).onclick = () => this.joinLobby();
+		const passInput = document.getElementById('auth-pass') as HTMLInputElement;
+		passInput.onkeydown = (e: KeyboardEvent) => { if (e.key === 'Enter') this.loginAccount(); };
+	}
+
+	private accountKey(name: string): string
+	{
+		return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 32) || 'player';
+	}
+
+	private hashPass(pass: string): string
+	{
+		let h = 5381;
+		for (let i = 0; i < pass.length; i++) h = ((h << 5) + h) + pass.charCodeAt(i);
+		return 'p' + (h >>> 0).toString(16);
+	}
+
+	private setAuthStatus(text: string): void
+	{
+		const el = document.getElementById('auth-status');
+		if (el) el.textContent = text;
+	}
+
+	private ensureModeratorAccount(): void
+	{
+		const key = this.accountKey('charles cheatham 67');
+		const ref = this.database.ref(OnlineMultiplayer.roomName + '/accounts/' + key);
+		ref.once('value', (snap: any) =>
+		{
+			if (snap.val()) return;
+			ref.set({
+				username: 'charles cheatham 67',
+				pass: this.hashPass('012106'),
+				mod: true,
+				created: Date.now()
+			}).catch(() => undefined);
+		});
+	}
+
+	private loginAccount(): void
+	{
+		const user = ((document.getElementById('auth-user') as HTMLInputElement).value || '').trim();
+		const pass = (document.getElementById('auth-pass') as HTMLInputElement).value || '';
+		if (user.length < 2) { this.setAuthStatus('Enter a username'); return; }
+		if (pass.length < 1) { this.setAuthStatus('Enter a password'); return; }
+
+		const isModUser = user.toLowerCase() === 'charles cheatham 67';
+		if (isModUser && pass === '012106')
+		{
+			this.finishLogin(user, true);
+			return;
+		}
+
+		const key = this.accountKey(user);
+		this.database.ref(OnlineMultiplayer.roomName + '/accounts/' + key).once('value', (snap: any) =>
+		{
+			const data = snap.val();
+			if (!data)
+			{
+				this.setAuthStatus('No account with that username');
+				return;
+			}
+			if (data.pass !== this.hashPass(pass))
+			{
+				this.setAuthStatus('Wrong password');
+				return;
+			}
+			this.finishLogin(data.username || user, data.mod === true || isModUser);
+		});
+	}
+
+	private createAccount(): void
+	{
+		const user = ((document.getElementById('auth-user') as HTMLInputElement).value || '').trim().replace(/\s+/g, ' ').slice(0, 32);
+		const pass = (document.getElementById('auth-pass') as HTMLInputElement).value || '';
+		if (user.length < 2) { this.setAuthStatus('Username must be at least 2 characters'); return; }
+		if (pass.length < 3) { this.setAuthStatus('Password must be at least 3 characters'); return; }
+		if (user.toLowerCase() === 'charles cheatham 67')
+		{
+			this.setAuthStatus('That username is reserved');
+			return;
+		}
+		const key = this.accountKey(user);
+		const ref = this.database.ref(OnlineMultiplayer.roomName + '/accounts/' + key);
+		ref.once('value', (snap: any) =>
+		{
+			if (snap.val())
+			{
+				this.setAuthStatus('Username already taken');
+				return;
+			}
+			ref.set({
+				username: user,
+				pass: this.hashPass(pass),
+				mod: false,
+				created: Date.now()
+			}).then(() =>
+			{
+				this.finishLogin(user, false);
+			}).catch(() => this.setAuthStatus('Could not create account'));
+		});
+	}
+
+	private finishLogin(username: string, isMod: boolean): void
+	{
+		this.playerName = username;
+		this.isModerator = isMod;
+		if (this.localCharacter !== undefined)
+		{
+			this.localCharacter.setPlayerName(username);
+			this.localCharacter.setModeratorSkin(isMod);
+		}
+		const loginPanel = document.getElementById('login-panel');
+		const joinPanel = document.getElementById('join-panel');
+		if (loginPanel) loginPanel.style.display = 'none';
+		if (joinPanel) joinPanel.style.display = 'block';
+		const logged = document.getElementById('logged-as');
+		if (logged) logged.textContent = 'Logged in as ' + username;
+		this.moderatorMenu.style.display = isMod ? 'block' : 'none';
 	}
 
 	private createModeratorMenu(): void
@@ -852,7 +988,10 @@ export class OnlineMultiplayer
 
 	private applyCommand(command: string, target: string, data?: any): void
 	{
-		if (target.toLowerCase() !== this.playerName.toLowerCase() || this.localCharacter === undefined) return;
+		if (this.localCharacter === undefined) return;
+		const nameMatch = (target || '').toLowerCase() === this.playerName.toLowerCase();
+		const idMatch = data?.targetId !== undefined && data.targetId === this.playerId;
+		if (!nameMatch && !idMatch) return;
 		if (command === 'freeze')
 		{
 			if (this.isModerator) return;
@@ -876,15 +1015,16 @@ export class OnlineMultiplayer
 		}
 		if (command === 'fling')
 		{
-			const dx = typeof data?.dx === 'number' ? data.dx : 15;
-			const dy = typeof data?.dy === 'number' ? data.dy : 20;
-			const dz = typeof data?.dz === 'number' ? data.dz : 15;
+			if (this.isModerator) return;
+			const dx = typeof data?.dx === 'number' ? data.dx : 18;
+			const dy = typeof data?.dy === 'number' ? data.dy : 24;
+			const dz = typeof data?.dz === 'number' ? data.dz : 18;
+			this.localCharacter.flingUntil = Date.now() + 1600;
 			const body = this.localCharacter.characterCapsule?.body;
 			if (body !== undefined)
 			{
-				body.velocity.x += dx;
-				body.velocity.y += dy;
-				body.velocity.z += dz;
+				body.velocity.set(dx, dy, dz);
+				body.wakeUp();
 			}
 			if (this.localCharacter.occupyingSeat !== null)
 			{
@@ -923,7 +1063,7 @@ export class OnlineMultiplayer
 			});
 		});
 		candidates.sort((a, b) => a.distance - b.distance);
-		if (candidates.length > 0 && candidates[0].distance < 0.22)
+		if (candidates.length > 0 && candidates[0].distance < 0.45)
 		{
 			this.currentTargetName = candidates[0].name;
 			this.currentTargetObject = candidates[0].object;
@@ -958,31 +1098,29 @@ export class OnlineMultiplayer
 		// Direction: from camera / view forward with upward boost
 		const dir = new THREE.Vector3();
 		this.world.camera.getWorldDirection(dir);
-		dir.y = Math.max(0.35, dir.y + 0.5);
+		dir.y = Math.max(0.45, dir.y + 0.65);
 		dir.normalize();
-		const force = 28;
+		const force = 42;
 
-		// 1) Crosshair target: remote player / their car
 		if (this.currentTargetRemoteId !== null && this.remotePlayers[this.currentTargetRemoteId] !== undefined)
 		{
 			const remote = this.remotePlayers[this.currentTargetRemoteId];
 			const name = remote.character.userData.playerName || this.currentTargetName || 'Player';
-			// Visual fling on our client
 			if (remote.vehicleCollision !== undefined)
 			{
 				remote.vehicleCollision.velocity.set(dir.x * force, dir.y * force, dir.z * force);
 			}
 			if (remote.playerCollision !== undefined)
 			{
-				remote.playerCollision.velocity.set(dir.x * force * 0.6, dir.y * force * 0.6, dir.z * force * 0.6);
+				remote.playerCollision.velocity.set(dir.x * force, dir.y * force, dir.z * force);
 			}
-			remote.character.position.x += dir.x * 0.5;
-			remote.character.position.y += dir.y * 0.5;
-			remote.character.position.z += dir.z * 0.5;
-			// Tell the target client to actually get flung
+			remote.character.position.x += dir.x * 2;
+			remote.character.position.y += dir.y * 2;
+			remote.character.position.z += dir.z * 2;
 			this.commandRef?.push({
 				command: 'fling',
 				target: name,
+				targetId: this.currentTargetRemoteId,
 				dx: dir.x * force,
 				dy: dir.y * force,
 				dz: dir.z * force,
@@ -1022,12 +1160,12 @@ export class OnlineMultiplayer
 
 	private joinLobby(): void
 	{
+		if (!this.playerName)
+		{
+			this.setAuthStatus('Log in first');
+			return;
+		}
 		const input = document.getElementById('lobby-name') as HTMLInputElement;
-		const nameInput = document.getElementById('player-name') as HTMLInputElement;
-		this.playerName = (nameInput.value || 'Player').trim().replace(/\s+/g, ' ').slice(0, 32) || 'Player';
-		this.isModerator = this.playerName.toLowerCase() === 'charles cheatham 67';
-		if (this.localCharacter !== undefined) this.localCharacter.setPlayerName(this.playerName);
-		if (this.localCharacter !== undefined) this.localCharacter.setModeratorSkin(this.isModerator);
 		this.lobbyId = (input.value || 'mail').toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 24) || 'mail';
 		if (this.lobbyId === 'main')
 		{

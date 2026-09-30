@@ -85,6 +85,7 @@ export class Character extends THREE.Object3D implements IWorldEntity
 	public isFlying: boolean = false;
 	public isSlowed: boolean = false;
 	public isFirstPerson: boolean = false;
+	public flingUntil: number = 0;
 	private playerNameLabel: THREE.Sprite;
 	private moderatorSkinEnabled: boolean = false;
 	
@@ -197,19 +198,19 @@ export class Character extends THREE.Object3D implements IWorldEntity
 		{
 			const canvas = document.createElement('canvas');
 			canvas.width = 512;
-			canvas.height = 96;
+			canvas.height = 64;
 			const context = canvas.getContext('2d');
 			context.font = 'bold 38px Arial';
 			context.textAlign = 'center';
 			context.fillStyle = '#ffffff';
 			context.strokeStyle = '#17212b';
 			context.lineWidth = 8;
-			context.strokeText(name, 256, 58);
-			context.fillText(name, 256, 58);
+			context.strokeText(name, 256, 42);
+			context.fillText(name, 256, 42);
 			const texture = new THREE.CanvasTexture(canvas);
 			const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
 			this.playerNameLabel = new THREE.Sprite(material);
-			this.playerNameLabel.scale.set(1.6, 0.3, 1);
+			this.playerNameLabel.scale.set(1.6, 0.2, 1);
 			this.playerNameLabel.position.set(0, 1.35, 0);
 			this.add(this.playerNameLabel);
 		}
@@ -221,8 +222,8 @@ export class Character extends THREE.Object3D implements IWorldEntity
 		context.fillStyle = '#ffffff';
 		context.strokeStyle = '#17212b';
 		context.lineWidth = 8;
-		context.strokeText(name, 256, 58);
-		context.fillText(name, 256, 58);
+		context.strokeText(name, 256, 42);
+		context.fillText(name, 256, 42);
 		(this.playerNameLabel.material as THREE.SpriteMaterial).map.needsUpdate = true;
 	}
 
@@ -972,6 +973,12 @@ export class Character extends THREE.Object3D implements IWorldEntity
 
 	public physicsPostStep(body: CANNON.Body, character: Character): void
 	{
+		if (character.flingUntil > Date.now())
+		{
+			character.velocity.set(body.velocity.x, body.velocity.y, body.velocity.z);
+			return;
+		}
+
 		// Get velocities
 		let simulatedVelocity = new THREE.Vector3(body.velocity.x, body.velocity.y, body.velocity.z);
 
