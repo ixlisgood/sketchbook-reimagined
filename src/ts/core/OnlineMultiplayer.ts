@@ -11,8 +11,8 @@ import { Car } from '../vehicles/Car';
 import { PickupTruck } from '../vehicles/PickupTruck';
 import { Airplane } from '../vehicles/Airplane';
 import { Helicopter } from '../vehicles/Helicopter';
+import { Mech } from '../vehicles/Mech';
 import { LoadingManager } from './LoadingManager';
-import { FollowTarget } from '../characters/character_ai/FollowTarget';
 
 interface OnlinePlayerState
 {
@@ -28,6 +28,7 @@ interface OnlinePlayerState
 	moving?: boolean;
 	updatedAt: number;
 	color?: string;
+	superpower?: string;
 	moderator?: boolean;
 	vehicleId?: string;
 	seatName?: string;
@@ -35,7 +36,6 @@ interface OnlinePlayerState
 	frozen?: boolean;
 	flying?: boolean;
 	speedBoost?: boolean;
-	invisible?: boolean;
 }
 
 interface RemotePlayer
@@ -44,13 +44,11 @@ interface RemotePlayer
 	vehicle?: THREE.Object3D;
 	vehicleId?: string;
 	vehicleCollision?: CANNON.Body;
-	playerCollision?: CANNON.Body;
 	animation?: string;
 	color?: string;
 	lastSeen: number;
 	lastKickAt?: number;
 	kickedVehicleId?: string;
-	invisible?: boolean;
 }
 
 interface RemoteVehicle
@@ -89,25 +87,6 @@ export class OnlineMultiplayer
 	private chatPanel: HTMLElement;
 	private centerCursor: HTMLElement;
 	private currentTargetName: string = '';
-	private currentTargetObject: THREE.Object3D | null = null;
-	private currentTargetRemoteId: string | null = null;
-	private flingClickHandler: ((e: MouseEvent) => void) | null = null;
-	private modClones: Character[] = [];
-	private modCloneIndex: number = -1;
-	private cloneKeyHandler: ((e: KeyboardEvent) => void) | null = null;
-	private bodyguards: Character[] = [];
-	private bodyguardMarkers: THREE.Object3D[] = [];
-	private bodyguardsEnabled: boolean = false;
-	/** Real controlled player only — never a mod clone */
-	private bodyguardHost: Character | null = null;
-	private bodyguardsRef: any;
-	private remoteBodyguards: { [ownerId: string]: THREE.Group[] } = {};
-	private remoteBodyguardCollisions: { [ownerId: string]: CANNON.Body[] } = {};
-	private isInvisible: boolean = false;
-	private joinTimeMs: number = 0;
-	private controlReady: boolean = false;
-	private lastControlFreeze: boolean = false;
-	private lastBodyguardPublish = 0;
 
 	constructor(world: World, loadingManager: LoadingManager)
 	{
@@ -120,7 +99,6 @@ export class OnlineMultiplayer
 		}
 
 		this.database = firebase.database();
-		this.ensureModeratorAccount();
 		this.createLobbyMenu();
 		this.world.registerUpdatable(this);
 	}
@@ -130,7 +108,6 @@ export class OnlineMultiplayer
 	public setLocalCharacter(character: Character): void
 	{
 		this.localCharacter = character;
-		this.bodyguardHost = character; // always the real you, not a clone
 		character.setPlayerColor(this.playerColor);
 		character.setPlayerName(this.playerName || 'Player');
 		if (this.isModerator) character.setModeratorSkin(true);
@@ -138,15 +115,6 @@ export class OnlineMultiplayer
 
 	public update(timeStep: number): void
 	{
-		// Never keep the local player stuck from leftover lobby freeze
-		if (this.localCharacter !== undefined)
-		{
-			if (this.isModerator)
-			{
-				this.localCharacter.isFrozen = false;
-			}
-		}
-
 		this.updateTargetCursor();
 		if (this.localCharacter === undefined || this.playerRef === undefined) return;
 
@@ -185,125 +153,9 @@ export class OnlineMultiplayer
 		state.frozen = this.freezeEveryone && !this.isModerator;
 		state.flying = this.localCharacter.isFlying;
 		state.speedBoost = this.localCharacter.moveSpeed > 4;
-		state.invisible = this.isInvisible;
+		state.superpower = this.localCharacter.superpower;
 
 		this.playerRef.set(state).catch((error) => console.error('Online multiplayer update failed', error));
-		this.publishBodyguards();
-	}
-
-	private publishBodyguards(): void
-	{
-		if (this.bodyguardsRef === undefined) return;
-		if (!this.isModerator || !this.bodyguardsEnabled || this.bodyguards.length === 0)
-		{
-			if (this.lastBodyguardPublish === -1) return;
-			this.lastBodyguardPublish = -1;
-			this.bodyguardsRef.set(null).catch(() => undefined);
-			return;
-		}
-		const now = Date.now();
-		if (now - this.lastBodyguardPublish < 120) return;
-		this.lastBodyguardPublish = now;
-		const payload = this.bodyguards.map((guard) => ({
-			x: guard.position.x,
-			y: guard.position.y,
-			z: guard.position.z,
-			qx: guard.quaternion.x,
-			qy: guard.quaternion.y,
-			qz: guard.quaternion.z,
-			qw: guard.quaternion.w
-		}));
-		this.bodyguardsRef.set(payload).catch((err) => console.error('bodyguard sync failed', err));
-	}
-
-	private syncRemoteBodyguards(all: { [ownerId: string]: any }): void
-	{
-		const activeOwners: { [id: string]: boolean } = {};
-		Object.keys(all || {}).forEach((ownerId) =>
-		{
-			if (ownerId === this.playerId) return;
-			const list = all[ownerId];
-			if (!list || !Array.isArray(list) || list.length === 0) return;
-			activeOwners[ownerId] = true;
-
-			if (this.remoteBodyguards[ownerId] === undefined)
-			{
-				this.remoteBodyguards[ownerId] = [];
-				this.remoteBodyguardCollisions[ownerId] = [];
-			}
-			const guards = this.remoteBodyguards[ownerId];
-			const colliders = this.remoteBodyguardCollisions[ownerId];
-
-			list.forEach((state: any, i: number) =>
-			{
-				if (typeof state.x !== 'number') return;
-				if (guards[i] === undefined)
-				{
-					this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
-					{
-						if (this.remoteBodyguards[ownerId] === undefined)
-						{
-							this.remoteBodyguards[ownerId] = [];
-							this.remoteBodyguardCollisions[ownerId] = [];
-						}
-						if (this.remoteBodyguards[ownerId][i] !== undefined) return;
-						const guard = this.createBodyguardVisual(model);
-						guard.position.set(state.x, state.y, state.z);
-						this.world.graphicsWorld.add(guard);
-						this.remoteBodyguards[ownerId][i] = guard;
-						const col = this.createRemotePlayerCollision();
-						col.position.set(state.x, state.y + 0.5, state.z);
-						this.remoteBodyguardCollisions[ownerId][i] = col;
-					});
-					return;
-				}
-				const guard = guards[i];
-				guard.position.set(state.x, state.y, state.z);
-				if (typeof state.ry === 'number') guard.rotation.y = state.ry;
-				if (colliders[i] !== undefined)
-				{
-					colliders[i].position.set(guard.position.x, guard.position.y + 0.5, guard.position.z);
-					this.separateLocalFromPoint(guard.position.x, guard.position.z, 0.9);
-				}
-			});
-
-			while (guards.length > list.length)
-			{
-				const g = guards.pop();
-				if (g !== undefined) this.world.graphicsWorld.remove(g);
-				const c = colliders.pop();
-				if (c !== undefined) this.world.physicsWorld.remove(c);
-			}
-		});
-
-		Object.keys(this.remoteBodyguards).forEach((ownerId) =>
-		{
-			if (activeOwners[ownerId]) return;
-			(this.remoteBodyguards[ownerId] || []).forEach((g) => this.world.graphicsWorld.remove(g));
-			(this.remoteBodyguardCollisions[ownerId] || []).forEach((c) => this.world.physicsWorld.remove(c));
-			delete this.remoteBodyguards[ownerId];
-			delete this.remoteBodyguardCollisions[ownerId];
-		});
-	}
-
-	private createBodyguardVisual(model: any): THREE.Group
-	{
-		const root = new THREE.Group();
-		const scene = (model.scene || model).clone(true);
-		scene.position.y = -0.57;
-		scene.traverse((node: any) =>
-		{
-			if (node.isMesh && node.material)
-			{
-				const mats = Array.isArray(node.material) ? node.material : [node.material];
-				mats.forEach((mat: any) =>
-				{
-					if (mat.color) mat.color.set('#030507');
-				});
-			}
-		});
-		root.add(scene);
-		return root;
 	}
 
 	private updateRemotePlayers(players: { [id: string]: OnlinePlayerState }): void
@@ -337,15 +189,9 @@ export class OnlineMultiplayer
 			remote.character.setPlayerName(state.name || 'Player');
 			remote.character.userData.playerName = state.name || 'Player';
 			remote.character.setModeratorSkin(isRemoteMod);
+			if (state.superpower !== undefined) remote.character.setSuperpower(state.superpower);
 			remote.character.isFlying = state.flying === true;
 			remote.character.moveSpeed = state.speedBoost === true ? 12 : 4;
-			const inv = state.invisible === true;
-			remote.invisible = inv;
-			remote.character.visible = !inv;
-			remote.character.traverse((child: any) =>
-			{
-				if (child.isSprite || child.isMesh) child.visible = !inv;
-			});
 			if (state.kickAt !== undefined && state.kickAt > (remote.lastKickAt || 0))
 			{
 				remote.lastKickAt = state.kickAt;
@@ -360,7 +206,7 @@ export class OnlineMultiplayer
 			const quaternion = new THREE.Quaternion(state.qx, state.qy, state.qz, state.qw);
 			if (state.vehicleType !== undefined)
 			{
-				if (!inv) remote.character.visible = true;
+				remote.character.visible = true;
 				this.setRemoteAnimation(remote, 'driving');
 				if (remote.kickedVehicleId === (state.vehicleId || id))
 				{
@@ -376,83 +222,24 @@ export class OnlineMultiplayer
 			}
 			else
 			{
-				if (!inv) remote.character.visible = true;
-				else remote.character.visible = false;
+				remote.character.visible = true;
 				this.removeRemoteVehicle(remote);
 				if (remote.character.parent !== this.world.graphicsWorld) this.world.graphicsWorld.attach(remote.character);
 				remote.character.position.lerp(position, 0.35);
 				remote.character.quaternion.slerp(quaternion, 0.35);
 				this.setRemoteAnimation(remote, state.moving === true ? 'run' : 'idle');
 			}
-			// Keep kinematic collider in sync so local player/cars bump into remotes
-			this.syncRemotePlayerCollision(remote, position, inv);
 		});
 
 		Object.keys(this.remotePlayers).forEach((id) =>
 		{
 			if (!activeIds[id] || Date.now() - this.remotePlayers[id].lastSeen > 5000)
 			{
-				this.removeRemotePlayerCollision(this.remotePlayers[id]);
 				this.world.remove(this.remotePlayers[id].character);
 				this.removeRemoteVehicle(this.remotePlayers[id]);
 				delete this.remotePlayers[id];
 			}
 		});
-	}
-
-	private createRemotePlayerCollision(): CANNON.Body
-	{
-		const body = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
-		const shape = new CANNON.Sphere(0.55);
-		body.addShape(shape);
-		// Same group as vehicles so cars definitely collide
-		body.collisionFilterGroup = 1;
-		body.collisionFilterMask = -1;
-		shape.collisionFilterGroup = 1;
-		shape.collisionFilterMask = -1;
-		this.world.physicsWorld.addBody(body);
-		return body;
-	}
-
-	private syncRemotePlayerCollision(remote: RemotePlayer, position: THREE.Vector3, invisible: boolean): void
-	{
-		if (remote.playerCollision === undefined)
-		{
-			remote.playerCollision = this.createRemotePlayerCollision();
-		}
-		remote.playerCollision.position.set(position.x, position.y + 0.55, position.z);
-		remote.playerCollision.velocity.setZero();
-		// Arcade controller ignores most physics hits — push local player out of remote bodies
-		this.separateLocalFromPoint(position.x, position.z, 0.95);
-	}
-
-	private separateLocalFromPoint(x: number, z: number, radius: number): void
-	{
-		// Soft push only — never fully block the local player
-		if (this.localCharacter === undefined || this.localCharacter.characterCapsule === undefined) return;
-		const body = this.localCharacter.characterCapsule.body;
-		const dx = body.position.x - x;
-		const dz = body.position.z - z;
-		const dist = Math.sqrt(dx * dx + dz * dz);
-		if (dist < radius && dist > 0.001)
-		{
-			const push = (radius - dist) * 0.25;
-			const nx = dx / dist;
-			const nz = dz / dist;
-			body.position.x += nx * push;
-			body.position.z += nz * push;
-			body.interpolatedPosition.x = body.position.x;
-			body.interpolatedPosition.z = body.position.z;
-		}
-	}
-
-	private removeRemotePlayerCollision(remote: RemotePlayer): void
-	{
-		if (remote.playerCollision !== undefined)
-		{
-			this.world.physicsWorld.remove(remote.playerCollision);
-			remote.playerCollision = undefined;
-		}
 	}
 
 	private createRemotePlayer(id: string, state: OnlinePlayerState): void
@@ -463,27 +250,17 @@ export class OnlineMultiplayer
 
 			const character = new Character(model);
 			character.isRemote = true;
+			if (state.superpower !== undefined) character.setSuperpower(state.superpower);
 			character.setPhysicsEnabled(false);
 			character.position.set(state.x, state.y, state.z);
 			character.quaternion.set(state.qx, state.qy, state.qz, state.qw);
 			this.world.add(character);
-			this.stripBrokenMeshes(character);
 			if (state.color !== undefined) character.setPlayerColor(state.color);
 			character.setPlayerName(state.name || 'Player');
 			character.userData.playerName = state.name || 'Player';
 			character.setModeratorSkin(state.moderator === true);
-			const inv = state.invisible === true;
-			character.visible = !inv;
-			const remote: RemotePlayer = {
-				character,
-				color: state.color,
-				lastSeen: Date.now(),
-				invisible: inv,
-				playerCollision: this.createRemotePlayerCollision()
-			};
-			remote.playerCollision.position.set(state.x, state.y + 0.5, state.z);
-			this.remotePlayers[id] = remote;
-			this.setRemoteAnimation(remote, state.vehicleType !== undefined ? 'driving' : state.moving === true ? 'run' : 'idle');
+			this.remotePlayers[id] = { character, color: state.color, lastSeen: Date.now() };
+			this.setRemoteAnimation(this.remotePlayers[id], state.vehicleType !== undefined ? 'driving' : state.moving === true ? 'run' : 'idle');
 		});
 	}
 
@@ -495,61 +272,30 @@ export class OnlineMultiplayer
 		{
 			remote.vehicleId = vehicleId;
 			remote.vehicle = existing.vehicle;
-			remote.vehicleCollision = existing.collision;
 			this.attachRemoteCharacter(remote, seatName);
-			existing.vehicle.position.lerp(position, 0.4);
-			existing.vehicle.quaternion.slerp(quaternion, 0.4);
-			existing.vehicle.visible = true;
-			// Keep collider locked to the car so bodyguards / local player hit it
-			existing.collision.position.set(existing.vehicle.position.x, existing.vehicle.position.y + 0.4, existing.vehicle.position.z);
-			existing.collision.quaternion.set(
-				existing.vehicle.quaternion.x,
-				existing.vehicle.quaternion.y,
-				existing.vehicle.quaternion.z,
-				existing.vehicle.quaternion.w
-			);
+			existing.vehicle.position.lerp(position, 0.35);
+			existing.vehicle.quaternion.slerp(quaternion, 0.35);
 			return;
 		}
 
 		if (remote.vehicle === undefined || remote.vehicle.userData.vehicleType !== vehicleType)
 		{
 			this.removeRemoteVehicle(remote);
-			const assetType = vehicleType === 'pickup' ? 'car'
-				: vehicleType === 'heli' ? 'heli'
-				: vehicleType === 'airplane' ? 'white_mesh'
-				: vehicleType;
+			const assetType = vehicleType === 'pickup' ? 'car' : (vehicleType === 'mech' ? 'boxman' : vehicleType);
 			this.loadingManager.loadGLTF('build/assets/' + assetType + '.glb', (model) =>
 			{
-				if (this.remoteVehicles[vehicleId] !== undefined)
-				{
-					remote.vehicle = this.remoteVehicles[vehicleId].vehicle;
-					remote.vehicleId = vehicleId;
-					remote.vehicleCollision = this.remoteVehicles[vehicleId].collision;
-					this.attachRemoteCharacter(remote, seatName);
-					return;
-				}
+				if (this.remoteVehicles[vehicleId] !== undefined) return;
 				const vehicle = this.createVehicleVisual(vehicleType, model);
-				if (vehicle === undefined) return;
-				this.stripBrokenMeshes(vehicle);
 				vehicle.userData.vehicleType = vehicleType;
 				vehicle.position.copy(position);
 				vehicle.quaternion.copy(quaternion);
-				vehicle.visible = true;
 				this.world.graphicsWorld.add(vehicle);
-
-				const collision = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
-				const shape = new CANNON.Box(new CANNON.Vec3(1.4, 0.7, 2.5));
-				collision.addShape(shape);
-				collision.collisionFilterGroup = 1;
-				collision.collisionFilterMask = -1;
-				shape.collisionFilterGroup = 1;
-				shape.collisionFilterMask = -1;
-				collision.position.set(position.x, position.y + 0.4, position.z);
-				collision.quaternion.set(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
-				this.world.physicsWorld.addBody(collision);
-
-				this.remoteVehicles[vehicleId] = { vehicle, collision };
 				remote.vehicle = vehicle;
+				this.attachRemoteCharacter(remote);
+				const collision = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC });
+				collision.addShape(new CANNON.Box(new CANNON.Vec3(1.2, 0.6, 2.2)));
+				this.world.physicsWorld.addBody(collision);
+				this.remoteVehicles[vehicleId] = { vehicle, collision };
 				remote.vehicleId = vehicleId;
 				remote.vehicleCollision = collision;
 				this.attachRemoteCharacter(remote, seatName);
@@ -557,12 +303,11 @@ export class OnlineMultiplayer
 			return;
 		}
 
-		remote.vehicle.position.lerp(position, 0.4);
-		remote.vehicle.quaternion.slerp(quaternion, 0.4);
-		remote.vehicle.visible = true;
+		remote.vehicle.position.lerp(position, 0.35);
+		remote.vehicle.quaternion.slerp(quaternion, 0.35);
 		if (remote.vehicleCollision !== undefined)
 		{
-			remote.vehicleCollision.position.set(remote.vehicle.position.x, remote.vehicle.position.y + 0.4, remote.vehicle.position.z);
+			remote.vehicleCollision.position.set(remote.vehicle.position.x, remote.vehicle.position.y, remote.vehicle.position.z);
 			remote.vehicleCollision.quaternion.set(remote.vehicle.quaternion.x, remote.vehicle.quaternion.y, remote.vehicle.quaternion.z, remote.vehicle.quaternion.w);
 		}
 	}
@@ -622,42 +367,14 @@ export class OnlineMultiplayer
 
 	private createVehicleVisual(vehicleType: string, model: any): Vehicle
 	{
-		this.stripBrokenMeshes(model.scene);
-		try
+		switch (vehicleType)
 		{
-			switch (vehicleType)
-			{
-				case 'pickup': return new Car(model);
-				case 'car': return new Car(model);
-				case 'airplane': return new Airplane(model);
-				case 'heli': return new Helicopter(model);
-				default: return new Car(model);
-			}
-		}
-		catch (err)
-		{
-			console.warn('vehicle visual failed', err);
-			return undefined;
-		}
-	}
-
-	private stripBrokenMeshes(root: THREE.Object3D): void
-	{
-		if (root === undefined || root === null) return;
-		for (let i = root.children.length - 1; i >= 0; i--)
-		{
-			const child: any = root.children[i];
-			if (child === undefined || child === null)
-			{
-				root.children.splice(i, 1);
-				continue;
-			}
-			if ((child.isMesh || child.isSkinnedMesh || child.isLine || child.isPoints) && child.geometry === undefined)
-			{
-				root.remove(child);
-				continue;
-			}
-			this.stripBrokenMeshes(child);
+			case 'mech': return new Mech(model);
+			case 'car': return new Car(model);
+			case 'pickup': return new PickupTruck(model);
+			case 'airplane': return new Airplane(model);
+			case 'heli': return new Helicopter(model);
+			default: return new Car(model);
 		}
 	}
 
@@ -665,40 +382,20 @@ export class OnlineMultiplayer
 	{
 		const menu = document.createElement('div');
 		menu.id = 'lobby-menu';
-		menu.innerHTML = '<div class="lobby-panel" id="login-panel">' +
-			'<h1>Sketchbook</h1>' +
-			'<label for="auth-user">Username</label>' +
-			'<input id="auth-user" maxlength="32" placeholder="Username" />' +
-			'<label for="auth-pass">Password</label>' +
-			'<input id="auth-pass" type="password" maxlength="32" placeholder="Password" />' +
-			'<button id="auth-login">Log in</button>' +
-			'<button id="auth-create" class="secondary-btn">Create account</button>' +
-			'<div id="auth-status"></div>' +
-		'</div>' +
-		'<div class="lobby-panel" id="join-panel" style="display:none">' +
-			'<h1>Join a lobby</h1>' +
-			'<div id="logged-as"></div>' +
+		menu.innerHTML = '<div class="lobby-panel">' +
+			'<h1>Sketchbook 1.0</h1>' +
 			'<label for="lobby-name">Lobby</label>' +
-			'<input id="lobby-name" value="mail" maxlength="24" />' +
+			'<input id="lobby-name" value="main" maxlength="24" />' +
+			'<label for="player-name">Username</label>' +
+			'<input id="player-name" maxlength="32" placeholder="Choose a username" />' +
 			'<div id="lobby-list"></div>' +
-			'<label>Skin</label>' +
+			'<label>Player color</label>' +
 			'<div class="color-list">' +
-				'<button class="player-color" data-color="#2f80ed" title="Blue" style="background:#2f80ed"></button>' +
-				'<button class="player-color" data-color="#e74c3c" title="Red" style="background:#e74c3c"></button>' +
-				'<button class="player-color" data-color="#27ae60" title="Green" style="background:#27ae60"></button>' +
-				'<button class="player-color" data-color="#f1c40f" title="Yellow" style="background:#f1c40f"></button>' +
-				'<button class="player-color" data-color="#9b59b6" title="Purple" style="background:#9b59b6"></button>' +
-				'<button class="player-color" data-color="#ff7f11" title="Orange" style="background:#ff7f11"></button>' +
-				'<button class="player-color" data-color="#00d2ff" title="Cyan" style="background:#00d2ff"></button>' +
-				'<button class="player-color" data-color="#ff4d9d" title="Pink" style="background:#ff4d9d"></button>' +
-				'<button class="player-color" data-color="#ffffff" title="White" style="background:#ffffff"></button>' +
-				'<button class="player-color" data-color="#111111" title="Black" style="background:#111111"></button>' +
-				'<button class="player-color" data-color="#ffd700" title="Gold" style="background:#ffd700"></button>' +
-				'<button class="player-color" data-color="#7fff00" title="Lime" style="background:#7fff00"></button>' +
-				'<button class="player-color" data-color="#8b4513" title="Brown" style="background:#8b4513"></button>' +
-				'<button class="player-color" data-color="#1abc9c" title="Teal" style="background:#1abc9c"></button>' +
-				'<button class="player-color" data-color="#e67e22" title="Copper" style="background:#e67e22"></button>' +
-				'<button class="player-color" data-color="#c0c0c0" title="Silver" style="background:#c0c0c0"></button>' +
+				'<button class="player-color" data-color="#2f80ed" style="background:#2f80ed"></button>' +
+				'<button class="player-color" data-color="#e74c3c" style="background:#e74c3c"></button>' +
+				'<button class="player-color" data-color="#27ae60" style="background:#27ae60"></button>' +
+				'<button class="player-color" data-color="#f1c40f" style="background:#f1c40f"></button>' +
+				'<button class="player-color" data-color="#9b59b6" style="background:#9b59b6"></button>' +
 			'</div>' +
 			'<button id="join-lobby">Join lobby</button>' +
 			'<div id="lobby-status"></div>' +
@@ -727,163 +424,32 @@ export class OnlineMultiplayer
 			};
 		});
 		(menu.querySelector('.player-color') as HTMLElement).classList.add('selected');
-		(document.getElementById('auth-login') as HTMLElement).onclick = () => this.loginAccount();
-		(document.getElementById('auth-create') as HTMLElement).onclick = () => this.createAccount();
+		const nameInput = document.getElementById('player-name') as HTMLInputElement;
+		nameInput.oninput = () =>
+		{
+			this.moderatorMenu.style.display = nameInput.value.trim().toLowerCase() === 'charles cheatham 67' ? 'block' : 'none';
+		};
 		(document.getElementById('join-lobby') as HTMLElement).onclick = () => this.joinLobby();
-		const passInput = document.getElementById('auth-pass') as HTMLInputElement;
-		passInput.onkeydown = (e: KeyboardEvent) => { if (e.key === 'Enter') this.loginAccount(); };
-	}
-
-	private accountKey(name: string): string
-	{
-		return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 32) || 'player';
-	}
-
-	private hashPass(pass: string): string
-	{
-		let h = 5381;
-		for (let i = 0; i < pass.length; i++) h = ((h << 5) + h) + pass.charCodeAt(i);
-		return 'p' + (h >>> 0).toString(16);
-	}
-
-	private setAuthStatus(text: string): void
-	{
-		const el = document.getElementById('auth-status');
-		if (el) el.textContent = text;
-	}
-
-	private ensureModeratorAccount(): void
-	{
-		const key = this.accountKey('charles cheatham 67');
-		const ref = this.database.ref(OnlineMultiplayer.roomName + '/accounts/' + key);
-		ref.once('value', (snap: any) =>
-		{
-			if (snap.val()) return;
-			ref.set({
-				username: 'charles cheatham 67',
-				pass: this.hashPass('012106'),
-				mod: true,
-				created: Date.now()
-			}).catch(() => undefined);
-		});
-	}
-
-	private loginAccount(): void
-	{
-		const user = ((document.getElementById('auth-user') as HTMLInputElement).value || '').trim();
-		const pass = (document.getElementById('auth-pass') as HTMLInputElement).value || '';
-		if (user.length < 2) { this.setAuthStatus('Enter a username'); return; }
-		if (pass.length < 1) { this.setAuthStatus('Enter a password'); return; }
-
-		const isModUser = user.toLowerCase() === 'charles cheatham 67';
-		if (isModUser && pass === '012106')
-		{
-			this.finishLogin(user, true);
-			return;
-		}
-
-		const key = this.accountKey(user);
-		this.database.ref(OnlineMultiplayer.roomName + '/accounts/' + key).once('value', (snap: any) =>
-		{
-			const data = snap.val();
-			if (!data)
-			{
-				this.setAuthStatus('No account with that username');
-				return;
-			}
-			if (data.pass !== this.hashPass(pass))
-			{
-				this.setAuthStatus('Wrong password');
-				return;
-			}
-			this.finishLogin(data.username || user, data.mod === true || isModUser);
-		});
-	}
-
-	private createAccount(): void
-	{
-		const user = ((document.getElementById('auth-user') as HTMLInputElement).value || '').trim().replace(/\s+/g, ' ').slice(0, 32);
-		const pass = (document.getElementById('auth-pass') as HTMLInputElement).value || '';
-		if (user.length < 2) { this.setAuthStatus('Username must be at least 2 characters'); return; }
-		if (pass.length < 3) { this.setAuthStatus('Password must be at least 3 characters'); return; }
-		if (user.toLowerCase() === 'charles cheatham 67')
-		{
-			this.setAuthStatus('That username is reserved');
-			return;
-		}
-		const key = this.accountKey(user);
-		const ref = this.database.ref(OnlineMultiplayer.roomName + '/accounts/' + key);
-		ref.once('value', (snap: any) =>
-		{
-			if (snap.val())
-			{
-				this.setAuthStatus('Username already taken');
-				return;
-			}
-			ref.set({
-				username: user,
-				pass: this.hashPass(pass),
-				mod: false,
-				created: Date.now()
-			}).then(() =>
-			{
-				this.finishLogin(user, false);
-			}).catch(() => this.setAuthStatus('Could not create account'));
-		});
-	}
-
-	private finishLogin(username: string, isMod: boolean): void
-	{
-		this.playerName = username;
-		this.isModerator = isMod;
-		if (this.localCharacter !== undefined)
-		{
-			this.localCharacter.setPlayerName(username);
-			this.localCharacter.setModeratorSkin(isMod);
-		}
-		const loginPanel = document.getElementById('login-panel');
-		const joinPanel = document.getElementById('join-panel');
-		if (loginPanel) loginPanel.style.display = 'none';
-		if (joinPanel) joinPanel.style.display = 'block';
-		const logged = document.getElementById('logged-as');
-		if (logged) logged.textContent = 'Logged in as ' + username;
-		this.moderatorMenu.style.display = isMod ? 'block' : 'none';
 	}
 
 	private createModeratorMenu(): void
 	{
 		const menu = document.createElement('div');
 		menu.id = 'moderator-menu';
-		menu.innerHTML = '<div class="moderator-panel">' +
-			'<strong>Moderator</strong>' +
+		menu.innerHTML = '<div class="moderator-panel"><strong>Moderator</strong>' +
 			'<button id="mod-fly">Fly</button>' +
-			'<button id="mod-invisible">Invisible</button>' +
-			'<button id="mod-speed">Speed boost</button>' +
 			'<button id="mod-freeze">Freeze everyone</button>' +
 			'<button id="mod-slow">Slow everyone</button>' +
-			'<button id="mod-kickvehicles">Kick all from vehicles</button>' +
-			'<button id="mod-clone">Clone (G)</button>' +
-			'<button id="mod-switchclone">Switch clone (Shift+G)</button>' +
-			'<button id="mod-clearclones">Clear clones (P)</button>' +
-			'<button id="mod-heal">Reset velocity</button>' +
-			'</div>';
+			'<button id="mod-speed">Speed boost</button></div>';
 		document.body.appendChild(menu);
 		this.moderatorMenu = menu;
-		const leftoverBg = document.getElementById('mod-bodyguards');
-		if (leftoverBg) leftoverBg.remove();
 		this.centerCursor = document.createElement('div');
 		this.centerCursor.id = 'moderator-cursor';
 		document.body.appendChild(this.centerCursor);
-
-		const bind = (id: string, fn: () => void) =>
-		{
-			const el = document.getElementById(id);
-			if (el) el.onclick = fn;
-		};
-
-		bind('mod-freeze', () =>
+		(document.getElementById('mod-freeze') as HTMLElement).onclick = () =>
 		{
 			this.freezeEveryone = !this.freezeEveryone;
+			// Freeze never affects the moderator
 			if (this.localCharacter !== undefined) this.localCharacter.isFrozen = false;
 			Object.keys(this.remotePlayers).forEach((id) =>
 			{
@@ -891,8 +457,8 @@ export class OnlineMultiplayer
 				remote.character.isFrozen = this.freezeEveryone && !(remote.character as any).moderatorSkinEnabled;
 			});
 			if (this.controlRef !== undefined) this.controlRef.update({ freeze: this.freezeEveryone, slow: this.slowEveryone });
-		});
-		bind('mod-slow', () =>
+		};
+		(document.getElementById('mod-slow') as HTMLElement).onclick = () =>
 		{
 			this.slowEveryone = !this.slowEveryone;
 			if (this.localCharacter !== undefined) this.localCharacter.isSlowed = false;
@@ -902,59 +468,29 @@ export class OnlineMultiplayer
 				remote.character.isSlowed = this.slowEveryone && !(remote.character as any).moderatorSkinEnabled;
 			});
 			if (this.controlRef !== undefined) this.controlRef.update({ freeze: this.freezeEveryone, slow: this.slowEveryone });
-		});
-		bind('mod-fly', () =>
+		};
+		(document.getElementById('mod-fly') as HTMLElement).onclick = () =>
 		{
-			if (this.localCharacter === undefined) return;
-			this.localCharacter.isFlying = !this.localCharacter.isFlying;
-			if (this.localCharacter.occupyingSeat !== null)
+			if (this.localCharacter !== undefined)
 			{
-				(this.localCharacter.occupyingSeat.vehicle as any).userData.fly = this.localCharacter.isFlying;
+				this.localCharacter.isFlying = !this.localCharacter.isFlying;
+				if (this.localCharacter.occupyingSeat !== null)
+				{
+					(this.localCharacter.occupyingSeat.vehicle as any).userData.fly = this.localCharacter.isFlying;
+				}
 			}
-		});
-		bind('mod-speed', () =>
+		};
+		(document.getElementById('mod-speed') as HTMLElement).onclick = () =>
 		{
-			if (this.localCharacter === undefined) return;
-			this.localCharacter.moveSpeed = this.localCharacter.moveSpeed === 12 ? 4 : 12;
-			if (this.localCharacter.occupyingSeat !== null)
+			if (this.localCharacter !== undefined)
 			{
-				(this.localCharacter.occupyingSeat.vehicle as any).userData.speedBoost = this.localCharacter.moveSpeed > 4;
+				this.localCharacter.moveSpeed = this.localCharacter.moveSpeed === 12 ? 4 : 12;
+				if (this.localCharacter.occupyingSeat !== null)
+				{
+					(this.localCharacter.occupyingSeat.vehicle as any).userData.speedBoost = this.localCharacter.moveSpeed > 4;
+				}
 			}
-		});
-		bind('mod-invisible', () =>
-		{
-			if (this.localCharacter === undefined) return;
-			this.isInvisible = !this.isInvisible;
-			this.localCharacter.visible = !this.isInvisible;
-			this.localCharacter.traverse((child: any) =>
-			{
-				if (child.isSprite) child.visible = !this.isInvisible;
-			});
-		});
-		bind('mod-kickvehicles', () =>
-		{
-			Object.keys(this.remotePlayers).forEach((id) =>
-			{
-				const remote = this.remotePlayers[id];
-				const target = (remote.character.userData.playerName as string) || 'Player';
-				this.commandRef?.push({
-					command: 'exitvehicle',
-					target,
-					at: firebase.database.ServerValue.TIMESTAMP
-				});
-			});
-		});
-		bind('mod-clone', () => this.spawnModeratorClone());
-		bind('mod-switchclone', () => this.switchModeratorClone());
-		bind('mod-clearclones', () => this.removeAllModeratorClones());
-		bind('mod-heal', () =>
-		{
-			if (this.localCharacter === undefined) return;
-			const body = this.localCharacter.characterCapsule?.body;
-			if (body !== undefined) body.velocity.set(0, 0, 0);
-			this.localCharacter.isFrozen = false;
-			this.localCharacter.isSlowed = false;
-		});
+		};
 	}
 
 	private createChat(): void
@@ -986,18 +522,11 @@ export class OnlineMultiplayer
 		this.chatRef?.push({ name: 'Moderator', text: '!' + command + ' ' + target, at: firebase.database.ServerValue.TIMESTAMP });
 	}
 
-	private applyCommand(command: string, target: string, data?: any): void
+	private applyCommand(command: string, target: string): void
 	{
-		if (this.localCharacter === undefined) return;
-		const nameMatch = (target || '').toLowerCase() === this.playerName.toLowerCase();
-		const idMatch = data?.targetId !== undefined && data.targetId === this.playerId;
-		if (!nameMatch && !idMatch) return;
-		if (command === 'freeze')
-		{
-			if (this.isModerator) return;
-			this.localCharacter.isFrozen = true;
-			return;
-		}
+		if (target.toLowerCase() !== this.playerName.toLowerCase() || this.localCharacter === undefined) return;
+		// Targeted freeze/slow still apply (moderator can target self if desired, but global ones skip mod)
+		if (command === 'freeze') this.localCharacter.isFrozen = !this.localCharacter.isFrozen;
 		if (command === 'slow') this.localCharacter.isSlowed = !this.localCharacter.isSlowed;
 		if (command === 'fly')
 		{
@@ -1009,40 +538,12 @@ export class OnlineMultiplayer
 			this.localCharacter.moveSpeed = this.localCharacter.moveSpeed === 12 ? 4 : 12;
 			if (this.localCharacter.occupyingSeat !== null) (this.localCharacter.occupyingSeat.vehicle as any).userData.speedBoost = this.localCharacter.moveSpeed > 4;
 		}
-		if (command === 'exitvehicle' && this.localCharacter.occupyingSeat !== null)
-		{
-			this.localCharacter.exitVehicle();
-		}
-		if (command === 'fling')
-		{
-			if (this.isModerator) return;
-			const dx = typeof data?.dx === 'number' ? data.dx : 18;
-			const dy = typeof data?.dy === 'number' ? data.dy : 24;
-			const dz = typeof data?.dz === 'number' ? data.dz : 18;
-			this.localCharacter.flingUntil = Date.now() + 1600;
-			const body = this.localCharacter.characterCapsule?.body;
-			if (body !== undefined)
-			{
-				body.velocity.set(dx, dy, dz);
-				body.wakeUp();
-			}
-			if (this.localCharacter.occupyingSeat !== null)
-			{
-				const veh: any = this.localCharacter.occupyingSeat.vehicle;
-				if (veh?.collision !== undefined)
-				{
-					veh.collision.velocity.x += dx;
-					veh.collision.velocity.y += dy;
-					veh.collision.velocity.z += dz;
-				}
-			}
-		}
 	}
 
 	private updateTargetCursor(): void
 	{
 		if (!this.isModerator || this.localCharacter === undefined) return;
-		const candidates: Array<{ name: string; object: THREE.Object3D; distance: number; remoteId: string }> = [];
+		const candidates: Array<{ name: string; object: THREE.Object3D; distance: number }> = [];
 		Object.keys(this.remotePlayers).forEach((id) =>
 		{
 			const remote = this.remotePlayers[id];
@@ -1051,132 +552,24 @@ export class OnlineMultiplayer
 			objects.forEach((object) =>
 			{
 				const projected = object.position.clone().project(this.world.camera);
-				if (projected.z > -1 && projected.z < 1)
-				{
-					candidates.push({
-						name: targetName,
-						object,
-						distance: Math.sqrt(projected.x * projected.x + projected.y * projected.y),
-						remoteId: id
-					});
-				}
+				if (projected.z > -1 && projected.z < 1) candidates.push({ name: targetName, object, distance: Math.sqrt(projected.x * projected.x + projected.y * projected.y) });
 			});
 		});
 		candidates.sort((a, b) => a.distance - b.distance);
-		if (candidates.length > 0 && candidates[0].distance < 0.45)
-		{
-			this.currentTargetName = candidates[0].name;
-			this.currentTargetObject = candidates[0].object;
-			this.currentTargetRemoteId = candidates[0].remoteId;
-		}
-		else
-		{
-			this.currentTargetName = '';
-			this.currentTargetObject = null;
-			this.currentTargetRemoteId = null;
-		}
+		this.currentTargetName = candidates.length > 0 && candidates[0].distance < 0.18 ? candidates[0].name : '';
 		this.centerCursor.classList.toggle('targeting', this.currentTargetName !== '');
-	}
-
-	private bindModeratorFlingClick(): void
-	{
-		if (this.flingClickHandler) return;
-		this.flingClickHandler = (event: MouseEvent) =>
-		{
-			if (!this.isModerator || event.button !== 0) return;
-			const tag = (event.target as HTMLElement)?.tagName;
-			if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
-			this.flingCurrentTarget();
-		};
-		window.addEventListener('mousedown', this.flingClickHandler);
-	}
-
-	private flingCurrentTarget(): void
-	{
-		if (this.localCharacter === undefined) return;
-
-		// Direction: from camera / view forward with upward boost
-		const dir = new THREE.Vector3();
-		this.world.camera.getWorldDirection(dir);
-		dir.y = Math.max(0.45, dir.y + 0.65);
-		dir.normalize();
-		const force = 42;
-
-		if (this.currentTargetRemoteId !== null && this.remotePlayers[this.currentTargetRemoteId] !== undefined)
-		{
-			const remote = this.remotePlayers[this.currentTargetRemoteId];
-			const name = remote.character.userData.playerName || this.currentTargetName || 'Player';
-			if (remote.vehicleCollision !== undefined)
-			{
-				remote.vehicleCollision.velocity.set(dir.x * force, dir.y * force, dir.z * force);
-			}
-			if (remote.playerCollision !== undefined)
-			{
-				remote.playerCollision.velocity.set(dir.x * force, dir.y * force, dir.z * force);
-			}
-			remote.character.position.x += dir.x * 2;
-			remote.character.position.y += dir.y * 2;
-			remote.character.position.z += dir.z * 2;
-			this.commandRef?.push({
-				command: 'fling',
-				target: name,
-				targetId: this.currentTargetRemoteId,
-				dx: dir.x * force,
-				dy: dir.y * force,
-				dz: dir.z * force,
-				at: firebase.database.ServerValue.TIMESTAMP
-			});
-			return;
-		}
-
-		// 2) Nearby world vehicles (local physics cars)
-		if (this.world.vehicles !== undefined)
-		{
-			let best: any = null;
-			let bestDist = 8;
-			const origin = this.localCharacter.position;
-			this.world.vehicles.forEach((vehicle: any) =>
-			{
-				const pos = vehicle.position || vehicle.collision?.position;
-				if (pos === undefined) return;
-				const dx = pos.x - origin.x;
-				const dy = pos.y - origin.y;
-				const dz = pos.z - origin.z;
-				const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-				if (d < bestDist)
-				{
-					bestDist = d;
-					best = vehicle;
-				}
-			});
-			if (best !== undefined && best !== null && best.collision !== undefined)
-			{
-				best.collision.velocity.x += dir.x * force;
-				best.collision.velocity.y += dir.y * force;
-				best.collision.velocity.z += dir.z * force;
-			}
-		}
 	}
 
 	private joinLobby(): void
 	{
-		if (!this.playerName)
-		{
-			this.setAuthStatus('Log in first');
-			return;
-		}
 		const input = document.getElementById('lobby-name') as HTMLInputElement;
-		this.lobbyId = (input.value || 'mail').toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 24) || 'mail';
-		if (this.lobbyId === 'main')
-		{
-			alert('Lobby "main" is closed. Joining "mail" instead.');
-			this.lobbyId = 'mail';
-			input.value = 'mail';
-		}
+		const nameInput = document.getElementById('player-name') as HTMLInputElement;
+		this.playerName = (nameInput.value || 'Player').trim().replace(/\s+/g, ' ').slice(0, 32) || 'Player';
+		this.isModerator = this.playerName.toLowerCase() === 'charles cheatham 67';
+		if (this.localCharacter !== undefined) this.localCharacter.setPlayerName(this.playerName);
+		if (this.localCharacter !== undefined) this.localCharacter.setModeratorSkin(this.isModerator);
+		this.lobbyId = (input.value || 'main').toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 24) || 'main';
 		this.playerId = this.database.ref().push().key;
-		this.joinTimeMs = Date.now();
-		this.controlReady = false;
-		this.lastControlFreeze = false;
 		const lobbyRef = this.database.ref(OnlineMultiplayer.roomName + '/lobbies/' + this.lobbyId);
 		this.controlRef = lobbyRef.child('control');
 		this.commandRef = lobbyRef.child('commands');
@@ -1184,59 +577,17 @@ export class OnlineMultiplayer
 		this.playersRef = lobbyRef.child('players');
 		this.playerRef = this.playersRef.child(this.playerId);
 		this.playerRef.onDisconnect().remove();
-
-		// Bodyguards disabled — leftover bodyguard data was crashing some lobbies
-
-		if (this.localCharacter !== undefined)
-		{
-			this.localCharacter.isFrozen = false;
-			this.localCharacter.isSlowed = false;
-			this.localCharacter.takeControl();
-		}
-		if (this.isModerator)
-		{
-			this.controlRef.update({ freeze: false, slow: false }).catch(() => undefined);
-		}
-
 		this.playersRef.on('value', (snapshot) => this.updateRemotePlayers(snapshot.val() || {}));
 		this.controlRef.on('value', (snapshot) =>
 		{
 			const data = snapshot.val() || {};
-			const freeze = data.freeze === true;
-			const slow = data.slow === true;
-
-			// First snapshot is leftover lobby state — do not freeze the joiner
-			if (!this.controlReady)
-			{
-				this.controlReady = true;
-				this.freezeEveryone = freeze;
-				this.slowEveryone = slow;
-				this.lastControlFreeze = freeze;
-				if (this.localCharacter !== undefined)
-				{
-					this.localCharacter.isFrozen = false;
-					this.localCharacter.isSlowed = false;
-				}
-				return;
-			}
-
-			const freezeChanged = freeze !== this.lastControlFreeze;
-			this.lastControlFreeze = freeze;
-			this.freezeEveryone = freeze;
-			this.slowEveryone = slow;
-
+			this.freezeEveryone = data.freeze === true;
+			this.slowEveryone = data.slow === true;
+			// Never freeze or slow the local moderator
 			if (this.localCharacter !== undefined)
 			{
-				if (this.isModerator)
-				{
-					this.localCharacter.isFrozen = false;
-					this.localCharacter.isSlowed = false;
-				}
-				else
-				{
-					if (freezeChanged) this.localCharacter.isFrozen = freeze;
-					this.localCharacter.isSlowed = slow;
-				}
+				this.localCharacter.isFrozen = this.freezeEveryone && !this.isModerator;
+				this.localCharacter.isSlowed = this.slowEveryone && !this.isModerator;
 			}
 			Object.keys(this.remotePlayers).forEach((id) =>
 			{
@@ -1246,16 +597,10 @@ export class OnlineMultiplayer
 				remote.character.isSlowed = this.slowEveryone && !isMod;
 			});
 		});
-		// Firebase child_added replays the entire history on subscribe — ignore all of that
 		this.commandRef.on('child_added', (snapshot) =>
 		{
 			const command = snapshot.val();
-			if (!command?.command || !command?.target) return;
-			const at = typeof command.at === 'number' ? command.at : 0;
-			// Drop anything without a timestamp, anything from before join, and a short grace period
-			if (!at || at <= this.joinTimeMs + 2500) return;
-			if (Date.now() < this.joinTimeMs + 3000) return;
-			this.applyCommand(command.command, command.target, command);
+			if (command?.command && command?.target) this.applyCommand(command.command, command.target);
 		});
 		this.chatRef.on('value', (snapshot) =>
 		{
@@ -1267,257 +612,7 @@ export class OnlineMultiplayer
 		});
 		lobbyRef.child('lastActive').set(firebase.database.ServerValue.TIMESTAMP);
 		this.lobbyMenu.style.display = 'none';
-		this.lobbyMenu.style.pointerEvents = 'none';
 		this.moderatorMenu.style.display = this.isModerator ? 'block' : 'none';
 		this.centerCursor.style.display = this.isModerator ? 'block' : 'none';
-
-		// Force movable state after UI closes
-		if (this.localCharacter !== undefined)
-		{
-			this.localCharacter.isFrozen = false;
-			this.localCharacter.isSlowed = false;
-			this.localCharacter.takeControl();
-		}
-
-		if (this.isModerator)
-		{
-			this.bindModeratorCloneKeys();
-			this.bindModeratorFlingClick();
-		}
-	}
-
-	private bindModeratorCloneKeys(): void
-	{
-		if (this.cloneKeyHandler) return;
-		this.cloneKeyHandler = (event: KeyboardEvent) =>
-		{
-			if (!this.isModerator || this.localCharacter === undefined) return;
-			// Ignore when typing in chat
-			const tag = (event.target as HTMLElement)?.tagName;
-			if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-
-			if (event.code === 'KeyG' && event.type === 'keydown')
-			{
-				event.preventDefault();
-				if (event.shiftKey) this.switchModeratorClone();
-				else this.spawnModeratorClone();
-			}
-			if (event.code === 'KeyP' && event.type === 'keydown')
-			{
-				event.preventDefault();
-				this.removeAllModeratorClones();
-			}
-		};
-		window.addEventListener('keydown', this.cloneKeyHandler);
-	}
-
-	private spawnModeratorClone(): void
-	{
-		if (this.localCharacter === undefined) return;
-		if (this.modClones.length >= 8) return; // soft limit
-
-		// Never freeze the real player when cloning
-		this.localCharacter.isFrozen = false;
-
-		this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
-		{
-			if (this.localCharacter === undefined) return;
-
-			const clone = new Character(model);
-			clone.isRemote = true;
-			clone.setPhysicsEnabled(false);
-			clone.isFrozen = false;
-			clone.setModeratorSkin(true);
-			clone.setPlayerName((this.playerName || 'Mod') + ' clone');
-			clone.setPlayerColor(this.playerColor);
-
-			const pos = this.localCharacter.position.clone();
-			const quat = this.localCharacter.quaternion.clone();
-			clone.position.copy(pos);
-			clone.quaternion.copy(quat);
-			clone.setAnimation('idle', 0.1);
-
-			this.world.add(clone);
-			this.modClones.push(clone);
-			this.modCloneIndex = this.modClones.length - 1;
-
-			// Keep control on the real player
-			this.localCharacter.isFrozen = false;
-			this.localCharacter.takeControl();
-		});
-	}
-
-	private switchModeratorClone(): void
-	{
-		if (this.localCharacter === undefined || this.modClones.length === 0) return;
-
-		this.localCharacter.isFrozen = false;
-
-		const currentPos = this.localCharacter.position.clone();
-		const currentQuat = this.localCharacter.quaternion.clone();
-
-		this.modCloneIndex = (this.modCloneIndex + 1) % this.modClones.length;
-		const target = this.modClones[this.modCloneIndex];
-		if (target === undefined) return;
-
-		const targetPos = target.position.clone();
-		const targetQuat = target.quaternion.clone();
-
-		target.position.copy(currentPos);
-		target.quaternion.copy(currentQuat);
-
-		if (this.localCharacter.characterCapsule !== undefined)
-		{
-			this.localCharacter.characterCapsule.body.position.set(targetPos.x, targetPos.y, targetPos.z);
-			this.localCharacter.characterCapsule.body.interpolatedPosition.set(targetPos.x, targetPos.y, targetPos.z);
-			this.localCharacter.characterCapsule.body.velocity.set(0, 0, 0);
-			this.localCharacter.characterCapsule.body.angularVelocity.set(0, 0, 0);
-		}
-		this.localCharacter.position.copy(targetPos);
-		this.localCharacter.quaternion.copy(targetQuat);
-		this.localCharacter.isFrozen = false;
-		this.localCharacter.takeControl();
-	}
-
-	private removeAllModeratorClones(): void
-	{
-		this.modClones.forEach((clone) =>
-		{
-			this.world.remove(clone);
-		});
-		this.modClones = [];
-		this.modCloneIndex = -1;
-	}
-
-	private toggleBodyguards(): void
-	{
-		if (this.bodyguardsEnabled)
-		{
-			this.clearBodyguards();
-			this.bodyguardsEnabled = false;
-			this.publishBodyguards();
-			return;
-		}
-		this.bodyguardsEnabled = true;
-		this.spawnBodyguards(10);
-	}
-
-	private spawnBodyguards(count: number): void
-	{
-		this.clearBodyguards();
-		const host = this.bodyguardHost || this.localCharacter;
-		if (host === undefined || host === null) return;
-
-		const origin = host.position.clone();
-		const radius = 2.8;
-
-		for (let i = 0; i < count; i++)
-		{
-			const angle = (i / count) * Math.PI * 2;
-			const marker = new THREE.Object3D();
-			marker.position.set(
-				origin.x + Math.cos(angle) * radius,
-				origin.y,
-				origin.z + Math.sin(angle) * radius
-			);
-			this.world.graphicsWorld.add(marker);
-			this.bodyguardMarkers.push(marker);
-
-			const index = i;
-			this.loadingManager.loadGLTF('build/assets/boxman.glb', (model) =>
-			{
-				if (!this.bodyguardsEnabled) return;
-
-				// Earlier physics AI: walk with gravity/collisions like map citizens
-				const guard = new Character(model);
-				guard.setModeratorSkin(true);
-				guard.setPlayerName('Bodyguard');
-				guard.setPlayerColor('#1a1a2e');
-				guard.setPosition(
-					origin.x + Math.cos(angle) * radius,
-					origin.y + 0.8,
-					origin.z + Math.sin(angle) * radius
-				);
-				const target = this.bodyguardMarkers[index];
-				if (target === undefined) return;
-				guard.setBehaviour(new FollowTarget(target, 1.3));
-				this.world.add(guard);
-
-				// Hit world/cars, not the player (keeps you able to move)
-				if (guard.characterCapsule !== undefined)
-				{
-					const b = guard.characterCapsule.body;
-					b.collisionFilterGroup = 1;
-					b.collisionFilterMask = ~2;
-					b.shapes.forEach((shape: any) =>
-					{
-						shape.collisionFilterGroup = 1;
-						shape.collisionFilterMask = ~2;
-					});
-				}
-				this.bodyguards.push(guard);
-			});
-		}
-	}
-
-	private clearBodyguards(): void
-	{
-		this.bodyguards.forEach((guard) => this.world.remove(guard));
-		this.bodyguards = [];
-		this.bodyguardMarkers.forEach((m) => this.world.graphicsWorld.remove(m));
-		this.bodyguardMarkers = [];
-	}
-
-	private updateBodyguards(timeStep: number): void
-	{
-		const host = this.bodyguardHost || this.localCharacter;
-		if (!this.bodyguardsEnabled || host === undefined || host === null) return;
-		if (this.bodyguardMarkers.length === 0) return;
-
-		const radius = 2.8;
-		const cx = host.position.x;
-		const cz = host.position.z;
-		const n = this.bodyguardMarkers.length;
-
-		// Keep slots on the ground — never lift markers into the sky with fly mode
-		const cy = host.isFlying
-			? (typeof (host as any).userData.bodyguardGroundY === 'number'
-				? (host as any).userData.bodyguardGroundY
-				: host.position.y)
-			: host.position.y;
-		if (!host.isFlying)
-		{
-			(host as any).userData.bodyguardGroundY = host.position.y;
-		}
-
-		this.bodyguardMarkers.forEach((marker, i) =>
-		{
-			const angle = (i / n) * Math.PI * 2;
-			marker.position.set(
-				cx + Math.cos(angle) * radius,
-				cy,
-				cz + Math.sin(angle) * radius
-			);
-		});
-
-		this.bodyguards.forEach((guard) =>
-		{
-			// Bodyguards never fly
-			guard.isFlying = false;
-			if (guard.characterCapsule !== undefined)
-			{
-				const v = guard.characterCapsule.body.velocity;
-				if (v.length() > 12) v.scale(0.25, v);
-				// Kill upward launch
-				if (v.y > 5) v.y = 0;
-			}
-		});
-
-		if (this.isModerator && this.localCharacter !== undefined)
-		{
-			this.localCharacter.isFrozen = false;
-		}
-
-		this.publishBodyguards();
 	}
 }

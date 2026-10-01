@@ -15,6 +15,7 @@ import { VehicleEntryInstance } from './VehicleEntryInstance';
 import { GroundImpactData } from './GroundImpactData';
 import { EntityType } from '../enums/EntityType';
 export declare class Character extends THREE.Object3D implements IWorldEntity {
+    static readonly superpowers: string[];
     updateOrder: number;
     entityType: EntityType;
     height: number;
@@ -62,13 +63,24 @@ export declare class Character extends THREE.Object3D implements IWorldEntity {
     isFlying: boolean;
     isSlowed: boolean;
     isFirstPerson: boolean;
+    superpower: string;
+    health: number;
+    isDead: boolean;
+    flingUntil: number;
     private playerNameLabel;
     private moderatorSkinEnabled;
     private physicsEnabled;
     private vehicleHitCooldown;
+    private powerCooldown;
+    private speedPowerTimer;
+    private deathTimer;
+    private spawnPosition;
+    private heldBody;
     constructor(gltf: any);
     setAnimations(animations: []): void;
     setPlayerColor(color: string): void;
+    setSuperpower(power: string): void;
+    setSpawnPosition(position: THREE.Vector3): void;
     setPlayerName(name: string): void;
     setModeratorSkin(enabled: boolean): void;
     setArcadeVelocityInfluence(x: number, y?: number, z?: number): void;
@@ -79,6 +91,12 @@ export declare class Character extends THREE.Object3D implements IWorldEntity {
      */
     setState(state: ICharacterState): void;
     setPosition(x: number, y: number, z: number): void;
+    takeDamage(amount: number, impulse?: THREE.Vector3): void;
+    private die;
+    private respawn;
+    private activateSuperpower;
+    private findCharacterInSight;
+    private showPowerBeam;
     resetVelocity(): void;
     setArcadeVelocityTarget(velZ: number, velX?: number, velY?: number): void;
     setOrientation(vector: THREE.Vector3, instantly?: boolean): void;
