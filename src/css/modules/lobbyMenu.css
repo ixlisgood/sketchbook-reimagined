@@ -93,19 +93,15 @@
 }
 
 #moderator-menu {
-	position: fixed;
-	top: 12px;
-	left: 50%;
-	transform: translateX(-50%);
+	position: absolute;
+	top: 62px;
+	right: 18px;
 	display: none;
 	z-index: 10002;
-	max-width: calc(100vw - 24px);
 }
 
 .moderator-panel {
 	display: flex;
-	flex-wrap: wrap;
-	justify-content: center;
 	gap: 8px;
 	padding: 10px;
 	background: #f4f1e8;

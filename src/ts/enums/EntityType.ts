@@ -4,6 +4,5 @@ export enum EntityType {
 	Car,
 	Helicopter,
 	Decoration,
-	System,
-	Mech
+	System
 }

@@ -4,6 +4,5 @@ export declare enum EntityType {
     Car = 2,
     Helicopter = 3,
     Decoration = 4,
-    System = 5,
-    Mech = 6
+    System = 5
 }

@@ -25,7 +25,6 @@ export class CharacterSpawnPoint implements ISpawnPoint
 			let worldPos = new THREE.Vector3();
 			this.object.getWorldPosition(worldPos);
 			player.setPosition(worldPos.x, worldPos.y, worldPos.z);
-			player.setSpawnPosition(worldPos);
 			
 			let forward = Utils.getForward(this.object);
 			player.setOrientation(forward, true);
@@ -43,7 +42,6 @@ export class CharacterSpawnPoint implements ISpawnPoint
 			const citizen = new Character(model);
 			const position = node.object.getWorldPosition(new THREE.Vector3());
 			citizen.setPosition(position.x, position.y, position.z);
-			citizen.setSpawnPosition(position);
 			citizen.setBehaviour(new CitizenBehaviour(node));
 			world.add(citizen);
 		});

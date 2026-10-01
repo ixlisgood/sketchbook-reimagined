@@ -1,7 +1,6 @@
 const firebaseModule: any = require('firebase/app');
 const firebase: any = firebaseModule.default || firebaseModule;
 require('firebase/database');
-require('firebase/auth');
 import * as THREE from 'three';
 import * as CANNON from 'cannon';
 
@@ -12,7 +11,6 @@ import { Car } from '../vehicles/Car';
 import { PickupTruck } from '../vehicles/PickupTruck';
 import { Airplane } from '../vehicles/Airplane';
 import { Helicopter } from '../vehicles/Helicopter';
-import { Mech } from '../vehicles/Mech';
 import { LoadingManager } from './LoadingManager';
 
 interface OnlinePlayerState
@@ -29,7 +27,6 @@ interface OnlinePlayerState
 	moving?: boolean;
 	updatedAt: number;
 	color?: string;
-	superpower?: string;
 	moderator?: boolean;
 	vehicleId?: string;
 	seatName?: string;
@@ -64,7 +61,6 @@ export class OnlineMultiplayer
 	private static readonly roomName = 'sketchbook';
 	private world: World;
 	private database: any;
-	private auth: any;
 	private playerRef: any;
 	private playersRef: any;
 	private controlRef: any;
@@ -89,7 +85,6 @@ export class OnlineMultiplayer
 	private chatPanel: HTMLElement;
 	private centerCursor: HTMLElement;
 	private currentTargetName: string = '';
-	private authStatus: HTMLElement;
 
 	constructor(world: World, loadingManager: LoadingManager)
 	{
@@ -98,14 +93,11 @@ export class OnlineMultiplayer
 
 		if (!firebase.apps.length)
 		{
-			const config = (window as any).sketchbookFirebaseConfig || {};
-			firebase.initializeApp(Object.assign({}, config, { databaseURL: OnlineMultiplayer.databaseUrl }));
+			firebase.initializeApp({ databaseURL: OnlineMultiplayer.databaseUrl });
 		}
 
 		this.database = firebase.database();
-		this.auth = firebase.auth();
 		this.createLobbyMenu();
-		this.auth.onAuthStateChanged((user: any) => this.updateAccountPanel(user));
 		this.world.registerUpdatable(this);
 	}
 
@@ -159,7 +151,6 @@ export class OnlineMultiplayer
 		state.frozen = this.freezeEveryone && !this.isModerator;
 		state.flying = this.localCharacter.isFlying;
 		state.speedBoost = this.localCharacter.moveSpeed > 4;
-		state.superpower = this.localCharacter.superpower;
 
 		this.playerRef.set(state).catch((error) => console.error('Online multiplayer update failed', error));
 	}
@@ -195,7 +186,6 @@ export class OnlineMultiplayer
 			remote.character.setPlayerName(state.name || 'Player');
 			remote.character.userData.playerName = state.name || 'Player';
 			remote.character.setModeratorSkin(isRemoteMod);
-			if (state.superpower !== undefined) remote.character.setSuperpower(state.superpower);
 			remote.character.isFlying = state.flying === true;
 			remote.character.moveSpeed = state.speedBoost === true ? 12 : 4;
 			if (state.kickAt !== undefined && state.kickAt > (remote.lastKickAt || 0))
@@ -256,7 +246,6 @@ export class OnlineMultiplayer
 
 			const character = new Character(model);
 			character.isRemote = true;
-			if (state.superpower !== undefined) character.setSuperpower(state.superpower);
 			character.setPhysicsEnabled(false);
 			character.position.set(state.x, state.y, state.z);
 			character.quaternion.set(state.qx, state.qy, state.qz, state.qw);
@@ -287,7 +276,7 @@ export class OnlineMultiplayer
 		if (remote.vehicle === undefined || remote.vehicle.userData.vehicleType !== vehicleType)
 		{
 			this.removeRemoteVehicle(remote);
-			const assetType = vehicleType === 'pickup' ? 'car' : (vehicleType === 'mech' ? 'boxman' : vehicleType);
+			const assetType = vehicleType === 'pickup' ? 'car' : vehicleType;
 			this.loadingManager.loadGLTF('build/assets/' + assetType + '.glb', (model) =>
 			{
 				if (this.remoteVehicles[vehicleId] !== undefined) return;
@@ -375,7 +364,6 @@ export class OnlineMultiplayer
 	{
 		switch (vehicleType)
 		{
-			case 'mech': return new Mech(model);
 			case 'car': return new Car(model);
 			case 'pickup': return new PickupTruck(model);
 			case 'airplane': return new Airplane(model);
@@ -390,15 +378,6 @@ export class OnlineMultiplayer
 		menu.id = 'lobby-menu';
 		menu.innerHTML = '<div class="lobby-panel">' +
 			'<h1>Sketchbook 1.0</h1>' +
-			'<label for="auth-user">Email</label>' +
-			'<input id="auth-user" type="email" autocomplete="username" placeholder="you@example.com" />' +
-			'<label for="auth-pass">Password</label>' +
-			'<input id="auth-pass" type="password" autocomplete="current-password" />' +
-			'<button id="auth-login">Sign in</button>' +
-			'<button id="auth-create">Create account</button>' +
-			'<div id="logged-as"></div>' +
-			'<button id="auth-signout" class="secondary-btn">Sign out</button>' +
-			'<div id="auth-status"></div>' +
 			'<label for="lobby-name">Lobby</label>' +
 			'<input id="lobby-name" value="main" maxlength="24" />' +
 			'<label for="player-name">Username</label>' +
@@ -406,33 +385,19 @@ export class OnlineMultiplayer
 			'<div id="lobby-list"></div>' +
 			'<label>Player color</label>' +
 			'<div class="color-list">' +
-				'<button class="player-color" data-color="#2f80ed" style="background:#2f80ed" aria-label="Blue" title="Blue"></button>' +
-				'<button class="player-color" data-color="#e74c3c" style="background:#e74c3c" aria-label="Red" title="Red"></button>' +
-				'<button class="player-color" data-color="#27ae60" style="background:#27ae60" aria-label="Green" title="Green"></button>' +
-				'<button class="player-color" data-color="#f1c40f" style="background:#f1c40f" aria-label="Yellow" title="Yellow"></button>' +
-				'<button class="player-color" data-color="#9b59b6" style="background:#9b59b6" aria-label="Purple" title="Purple"></button>' +
-				'<button class="player-color" data-color="#e67e22" style="background:#e67e22" aria-label="Orange" title="Orange"></button>' +
-				'<button class="player-color" data-color="#16a085" style="background:#16a085" aria-label="Teal" title="Teal"></button>' +
-				'<button class="player-color" data-color="#00bcd4" style="background:#00bcd4" aria-label="Cyan" title="Cyan"></button>' +
-				'<button class="player-color" data-color="#ff69b4" style="background:#ff69b4" aria-label="Pink" title="Pink"></button>' +
-				'<button class="player-color" data-color="#d81b60" style="background:#d81b60" aria-label="Magenta" title="Magenta"></button>' +
-				'<button class="player-color" data-color="#8bc34a" style="background:#8bc34a" aria-label="Lime" title="Lime"></button>' +
-				'<button class="player-color" data-color="#34495e" style="background:#34495e" aria-label="Slate" title="Slate"></button>' +
-				'<button class="player-color" data-color="#ffffff" style="background:#ffffff" aria-label="White" title="White"></button>' +
-				'<button class="player-color" data-color="#202124" style="background:#202124" aria-label="Black" title="Black"></button>' +
+				'<button class="player-color" data-color="#2f80ed" style="background:#2f80ed"></button>' +
+				'<button class="player-color" data-color="#e74c3c" style="background:#e74c3c"></button>' +
+				'<button class="player-color" data-color="#27ae60" style="background:#27ae60"></button>' +
+				'<button class="player-color" data-color="#f1c40f" style="background:#f1c40f"></button>' +
+				'<button class="player-color" data-color="#9b59b6" style="background:#9b59b6"></button>' +
 			'</div>' +
 			'<button id="join-lobby">Join lobby</button>' +
 			'<div id="lobby-status"></div>' +
 		'</div>';
 		document.body.appendChild(menu);
 		this.lobbyMenu = menu;
-		this.authStatus = document.getElementById('auth-status');
 		this.createModeratorMenu();
 		this.createChat();
-		if (!this.auth.app.options.apiKey)
-		{
-			this.authStatus.textContent = 'Email/password accounts need a Firebase web API key in window.sketchbookFirebaseConfig.';
-		}
 
 		const lobbyList = this.database.ref(OnlineMultiplayer.roomName + '/lobbies');
 		lobbyList.on('value', (snapshot) =>
@@ -453,56 +418,12 @@ export class OnlineMultiplayer
 			};
 		});
 		(menu.querySelector('.player-color') as HTMLElement).classList.add('selected');
-		(document.getElementById('auth-login') as HTMLElement).onclick = () => this.authenticate(false);
-		(document.getElementById('auth-create') as HTMLElement).onclick = () => this.authenticate(true);
-		(document.getElementById('auth-signout') as HTMLElement).onclick = () => this.auth.signOut();
 		const nameInput = document.getElementById('player-name') as HTMLInputElement;
 		nameInput.oninput = () =>
 		{
 			this.moderatorMenu.style.display = nameInput.value.trim().toLowerCase() === 'charles cheatham 67' ? 'block' : 'none';
 		};
 		(document.getElementById('join-lobby') as HTMLElement).onclick = () => this.joinLobby();
-	}
-
-	private authenticate(createAccount: boolean): void
-	{
-		const email = (document.getElementById('auth-user') as HTMLInputElement).value.trim();
-		const password = (document.getElementById('auth-pass') as HTMLInputElement).value;
-		if (!email || !password)
-		{
-			this.authStatus.textContent = 'Enter an email address and password.';
-			return;
-		}
-		if (!this.auth.app.options.apiKey)
-		{
-			this.authStatus.textContent = 'Firebase email/password auth is not configured. Add the Firebase web API key to window.sketchbookFirebaseConfig.';
-			return;
-		}
-		const request = createAccount
-			? this.auth.createUserWithEmailAndPassword(email, password)
-			: this.auth.signInWithEmailAndPassword(email, password);
-		request.then(() =>
-		{
-			(document.getElementById('auth-pass') as HTMLInputElement).value = '';
-			this.authStatus.textContent = '';
-		}).catch((error: any) =>
-		{
-			this.authStatus.textContent = error.code === 'auth/operation-not-allowed'
-				? 'Enable Email/Password sign-in in the Firebase console.'
-				: (error.message || 'Account sign-in failed.');
-		});
-	}
-
-	private updateAccountPanel(user: any): void
-	{
-		const signedIn = user !== null;
-		(document.getElementById('logged-as') as HTMLElement).textContent = signedIn ? 'Signed in as ' + user.email : '';
-		(document.getElementById('auth-signout') as HTMLElement).style.display = signedIn ? 'block' : 'none';
-		if (signedIn && this.playerName === '')
-		{
-			this.playerName = user.displayName || user.email.split('@')[0];
-			(document.getElementById('player-name') as HTMLInputElement).value = this.playerName;
-		}
 	}
 
 	private createModeratorMenu(): void

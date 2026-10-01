@@ -10,7 +10,6 @@ import { Character } from '../characters/Character';
 import { FollowPath } from '../characters/character_ai/FollowPath';
 import { LoadingManager } from '../core/LoadingManager';
 import { IWorldEntity } from '../interfaces/IWorldEntity';
-import { Mech } from '../vehicles/Mech';
 
 export class VehicleSpawnPoint implements ISpawnPoint
 {
@@ -29,7 +28,7 @@ export class VehicleSpawnPoint implements ISpawnPoint
 	{
 		const vehicleType = this.type === 'pickup' ? 'car' : this.type;
 		const assetType = vehicleType === 'airplane' ? 'white_mesh'
-			: (vehicleType === 'heli' ? 'heli' : (vehicleType === 'mech' ? 'boxman' : 'car'));
+			: (vehicleType === 'heli' ? 'heli' : 'car');
 
 		loadingManager.loadGLTF('build/assets/' + assetType + '.glb', (model: any) =>
 		{
@@ -43,7 +42,7 @@ export class VehicleSpawnPoint implements ISpawnPoint
 			this.object.getWorldPosition(worldPos);
 			this.object.getWorldQuaternion(worldQuat);
 
-			const lift = vehicleType === 'airplane' ? 3.2 : (vehicleType === 'mech' ? 0.2 : 1);
+			const lift = vehicleType === 'airplane' ? 3.2 : 1;
 			vehicle.setPosition(worldPos.x, worldPos.y + lift, worldPos.z);
 			vehicle.collision.quaternion.copy(Utils.cannonQuat(worldQuat));
 			world.add(vehicle);
@@ -53,7 +52,6 @@ export class VehicleSpawnPoint implements ISpawnPoint
 				loadingManager.loadGLTF('build/assets/boxman.glb', (charModel) =>
 				{
 					let character = new Character(charModel);
-					character.setSpawnPosition(worldPos);
 					world.add(character);
 					character.teleportToVehicle(vehicle, vehicle.seats[0]);
 
@@ -98,7 +96,6 @@ export class VehicleSpawnPoint implements ISpawnPoint
 	{
 		switch (type)
 		{
-			case 'mech': return new Mech(model);
 			case 'pickup': return new Car(model);
 			case 'car': return new Car(model);
 			case 'heli': return new Helicopter(model);
