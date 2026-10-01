@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { ISpawnPoint } from '../interfaces/ISpawnPoint';
 import { VehicleSpawnPoint } from './VehicleSpawnPoint';
 import { CharacterSpawnPoint } from './CharacterSpawnPoint';
@@ -58,6 +59,8 @@ export class Scenario
 		if (!this.invisible) this.createLaunchLink();
 
 		// Find all scenario spawns and enitites
+		let playerSpawn: THREE.Object3D;
+		let hasMechSpawn = false;
 		root.traverse((child) => {
 			if (child.hasOwnProperty('userData') && child.userData.hasOwnProperty('data'))
 			{
@@ -65,6 +68,7 @@ export class Scenario
 				{
 					if (child.userData.type === 'car' || child.userData.type === 'airplane' || child.userData.type === 'heli' || child.userData.type === 'mech')
 					{
+						if (child.userData.type === 'mech') hasMechSpawn = true;
 						let sp = new VehicleSpawnPoint(child);
 
 						if (child.userData.hasOwnProperty('type')) 
@@ -86,12 +90,25 @@ export class Scenario
 					}
 					else if (child.userData.type === 'player')
 					{
+						playerSpawn = child;
 						let sp = new CharacterSpawnPoint(child);
 						this.spawnPoints.push(sp);
 					}
 				}
 			}
 		});
+
+		if (this.default && playerSpawn !== undefined && !hasMechSpawn)
+		{
+			const mechSpawn = new THREE.Object3D();
+			const orientation = playerSpawn.getWorldQuaternion(new THREE.Quaternion());
+			const right = new THREE.Vector3(1, 0, 0).applyQuaternion(orientation);
+			mechSpawn.position.copy(playerSpawn.getWorldPosition(new THREE.Vector3())).add(right.multiplyScalar(3.5));
+			mechSpawn.quaternion.copy(orientation);
+			const spawnPoint = new VehicleSpawnPoint(mechSpawn);
+			spawnPoint.type = 'mech';
+			this.spawnPoints.push(spawnPoint);
+		}
 	}
 
 	public createLaunchLink(): void

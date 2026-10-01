@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { World } from '../world/World';
 import { LoadingManager } from '../core/LoadingManager';
 export declare class Scenario {
