@@ -4,7 +4,6 @@ import { World } from '../world/World';
 import { Helicopter } from '../vehicles/Helicopter';
 import { Airplane } from '../vehicles/Airplane';
 import { Car } from '../vehicles/Car';
-import { Mech } from '../vehicles/Mech';
 import * as Utils from '../core/FunctionLibrary';
 import { Vehicle } from '../vehicles/Vehicle';
 import { Character } from '../characters/Character';
@@ -29,7 +28,7 @@ export class VehicleSpawnPoint implements ISpawnPoint
 	{
 		const vehicleType = this.type === 'pickup' ? 'car' : this.type;
 		const assetType = vehicleType === 'airplane' ? 'white_mesh'
-			: (vehicleType === 'heli' ? 'heli' : (vehicleType === 'mech' ? 'boxman' : 'car'));
+			: (vehicleType === 'heli' ? 'heli' : 'car');
 
 		loadingManager.loadGLTF('build/assets/' + assetType + '.glb', (model: any) =>
 		{
@@ -101,7 +100,6 @@ export class VehicleSpawnPoint implements ISpawnPoint
 			case 'car': return new Car(model);
 			case 'heli': return new Helicopter(model);
 			case 'airplane': return new Airplane(model);
-			case 'mech': return new Mech(model);
 		}
 	}
 }

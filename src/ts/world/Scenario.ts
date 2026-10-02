@@ -1,4 +1,3 @@
-import * as THREE from 'three';
 import { ISpawnPoint } from '../interfaces/ISpawnPoint';
 import { VehicleSpawnPoint } from './VehicleSpawnPoint';
 import { CharacterSpawnPoint } from './CharacterSpawnPoint';
@@ -64,7 +63,7 @@ export class Scenario
 			{
 				if (child.userData.data === 'spawn')
 				{
-					if (child.userData.type === 'car' || child.userData.type === 'airplane' || child.userData.type === 'heli' || child.userData.type === 'mech')
+					if (child.userData.type === 'car' || child.userData.type === 'airplane' || child.userData.type === 'heli')
 					{
 						let sp = new VehicleSpawnPoint(child);
 
@@ -106,18 +105,6 @@ export class Scenario
 
 	public launch(loadingManager: LoadingManager, world: World): void
 	{
-		const needsMechReplacement = this.default && !this.spawnPoints.some((sp: any) => sp.type === 'mech');
-		if (needsMechReplacement)
-		{
-			let carIndex = this.spawnPoints.findIndex((sp: any) => sp.type === 'car' && sp.driver === undefined);
-			if (carIndex < 0) carIndex = this.spawnPoints.findIndex((sp: any) => sp.type === 'car');
-			if (carIndex >= 0)
-			{
-				(this.spawnPoints[carIndex] as any).type = 'mech';
-				(this.spawnPoints[carIndex] as any).driver = undefined;
-			}
-		}
-
 		this.spawnPoints.forEach((sp) => {
 			sp.spawn(loadingManager, world);
 		});
