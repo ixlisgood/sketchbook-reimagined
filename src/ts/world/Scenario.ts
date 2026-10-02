@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { ISpawnPoint } from '../interfaces/ISpawnPoint';
 import { VehicleSpawnPoint } from './VehicleSpawnPoint';
 import { CharacterSpawnPoint } from './CharacterSpawnPoint';
@@ -63,7 +64,7 @@ export class Scenario
 			{
 				if (child.userData.data === 'spawn')
 				{
-					if (child.userData.type === 'car' || child.userData.type === 'airplane' || child.userData.type === 'heli')
+					if (child.userData.type === 'car' || child.userData.type === 'airplane' || child.userData.type === 'heli' || child.userData.type === 'mech')
 					{
 						let sp = new VehicleSpawnPoint(child);
 
@@ -105,6 +106,31 @@ export class Scenario
 
 	public launch(loadingManager: LoadingManager, world: World): void
 	{
+		const hasMechSpawn = this.spawnPoints.some((sp: any) => sp.type === 'mech');
+		if (!hasMechSpawn)
+		{
+			const mechSpawn = new VehicleSpawnPoint(new THREE.Object3D());
+			mechSpawn.type = 'mech';
+			mechSpawn.driver = 'player';
+
+			const spawnObject = new THREE.Object3D();
+			spawnObject.name = 'MechSpawn';
+			let referencePosition = new THREE.Vector3(0, 2, 0);
+			let foundReference = false;
+			this.rootNode.traverse((child: any) =>
+			{
+				if (foundReference) return;
+				if (child.userData?.data === 'spawn' && (child.userData.type === 'car' || child.userData.type === 'airplane' || child.userData.type === 'heli'))
+				{
+					child.getWorldPosition(referencePosition);
+					foundReference = true;
+				}
+			});
+			spawnObject.position.copy(referencePosition.clone().add(new THREE.Vector3(0, 0, 8)));
+			(mechSpawn as any).object = spawnObject;
+			this.spawnPoints.push(mechSpawn);
+		}
+
 		this.spawnPoints.forEach((sp) => {
 			sp.spawn(loadingManager, world);
 		});

@@ -31,7 +31,6 @@ import { VehicleHit } from './character_states/VehicleHit';
 
 export class Character extends THREE.Object3D implements IWorldEntity
 {
-	public static readonly superpowers: string[] = ['laser eyes', 'telekinesis', 'flight', 'super speed', 'super jump', 'force blast'];
 	public updateOrder: number = 1;
 	public entityType: EntityType = EntityType.Character;
 
@@ -86,21 +85,16 @@ export class Character extends THREE.Object3D implements IWorldEntity
 	public isFlying: boolean = false;
 	public isSlowed: boolean = false;
 	public isFirstPerson: boolean = false;
-	public superpower: string;
 	public flingUntil: number = 0;
 	private playerNameLabel: THREE.Sprite;
 	private moderatorSkinEnabled: boolean = false;
 	
 	private physicsEnabled: boolean = true;
 	private vehicleHitCooldown: number = 0;
-	private powerCooldown: number = 0;
-	private speedPowerTimer: number = 0;
-	private heldBody: CANNON.Body | undefined;
 
 	constructor(gltf: any)
 	{
 		super();
-		this.setSuperpower(Character.superpowers[Math.floor(Math.random() * Character.superpowers.length)]);
 
 		this.readCharacterData(gltf);
 		this.setAnimations(gltf.animations);
@@ -137,7 +131,6 @@ export class Character extends THREE.Object3D implements IWorldEntity
 			'primary': new KeyBinding('Mouse0'),
 			'secondary': new KeyBinding('Mouse1'),
 			'first_person': new KeyBinding('KeyV'),
-			'power': new KeyBinding('KeyQ'),
 		};
 
 		// Physics
@@ -197,11 +190,6 @@ export class Character extends THREE.Object3D implements IWorldEntity
 		{
 			if (material.color !== undefined) material.color.set(color);
 		});
-	}
-
-	public setSuperpower(power: string): void
-	{
-		if (Character.superpowers.indexOf(power) >= 0) this.superpower = power;
 	}
 
 	public setPlayerName(name: string): void
@@ -409,11 +397,6 @@ export class Character extends THREE.Object3D implements IWorldEntity
 		}
 		else
 		{
-			if (code === 'mouse0' && pressed)
-			{
-				this.activateSuperpower();
-				return;
-			}
 			for (const action in this.actions) {
 				if (this.actions.hasOwnProperty(action)) {
 					const binding = this.actions[action];
@@ -468,8 +451,6 @@ export class Character extends THREE.Object3D implements IWorldEntity
 			// Set the 'just' attributes
 			if (value) action.justPressed = true;
 			else action.justReleased = true;
-			if (actionName === 'power' && value) this.activateSuperpower();
-
 			// Tell player to handle states according to new input
 			this.charState.onInputChange();
 
@@ -503,20 +484,6 @@ export class Character extends THREE.Object3D implements IWorldEntity
 	public update(timeStep: number): void
 	{
 		this.vehicleHitCooldown = Math.max(0, this.vehicleHitCooldown - timeStep);
-		this.powerCooldown = Math.max(0, this.powerCooldown - timeStep);
-		if (this.speedPowerTimer > 0)
-		{
-			this.speedPowerTimer = Math.max(0, this.speedPowerTimer - timeStep);
-			if (this.speedPowerTimer === 0) this.moveSpeed = 4;
-		}
-		if (this.heldBody !== undefined && this.world !== undefined)
-		{
-			const direction = this.world.camera.getWorldDirection(new THREE.Vector3());
-			const target = this.world.camera.position.clone().add(direction.multiplyScalar(3));
-			const velocity = target.sub(Utils.threeVector(this.heldBody.position)).multiplyScalar(8);
-			this.heldBody.velocity.set(velocity.x, velocity.y, velocity.z);
-			this.heldBody.wakeUp();
-		}
 		if (this.isFrozen)
 		{
 			this.velocityTarget.set(0, 0, 0);
@@ -578,93 +545,6 @@ export class Character extends THREE.Object3D implements IWorldEntity
 		}
 
 		this.updateMatrixWorld();
-	}
-
-	private activateSuperpower(): void
-	{
-		if (this.powerCooldown > 0 || this.world === undefined || this.controlledObject !== undefined) return;
-		this.powerCooldown = 0.4;
-		const direction = this.world.camera.getWorldDirection(new THREE.Vector3());
-		if (this.superpower === 'flight')
-		{
-			this.isFlying = !this.isFlying;
-		}
-		else if (this.superpower === 'laser eyes')
-		{
-			const hit = this.raycastPowerTarget(35, direction);
-			if (hit !== undefined && hit.body.mass > 0)
-			{
-				hit.body.velocity.x += direction.x * 12;
-				hit.body.velocity.y += direction.y * 12 + 2;
-				hit.body.velocity.z += direction.z * 12;
-				hit.body.wakeUp();
-			}
-			this.showPowerBeam(direction, hit === undefined ? 35 : this.world.camera.position.distanceTo(Utils.threeVector(hit.hitPointWorld)), 0xff352e);
-		}
-		else if (this.superpower === 'telekinesis')
-		{
-			if (this.heldBody !== undefined)
-			{
-				this.heldBody.velocity.set(direction.x * 20, direction.y * 20 + 3, direction.z * 20);
-				this.heldBody.wakeUp();
-				this.heldBody = undefined;
-			}
-			else
-			{
-				const hit = this.raycastPowerTarget(18, direction);
-				if (hit !== undefined && hit.body.mass > 0) this.heldBody = hit.body;
-			}
-		}
-		else if (this.superpower === 'super speed')
-		{
-			this.moveSpeed = 12;
-			this.speedPowerTimer = 8;
-		}
-		else if (this.superpower === 'super jump')
-		{
-			this.characterCapsule.body.velocity.y = 16;
-		}
-		else if (this.superpower === 'force blast')
-		{
-			const origin = this.characterCapsule.body.position;
-			this.world.physicsWorld.bodies.forEach((body) =>
-			{
-				if (body === this.characterCapsule.body || body.mass <= 0) return;
-				const offset = new THREE.Vector3(body.position.x - origin.x, body.position.y - origin.y, body.position.z - origin.z);
-				const distance = offset.length();
-				if (distance === 0 || distance > 10) return;
-				const strength = (1 - distance / 10) * 18;
-				offset.normalize().multiplyScalar(strength);
-				body.velocity.x += offset.x;
-				body.velocity.y += offset.y + 4;
-				body.velocity.z += offset.z;
-				body.wakeUp();
-			});
-		}
-	}
-
-	private raycastPowerTarget(range: number, direction: THREE.Vector3): CANNON.RaycastResult
-	{
-		const start = this.world.camera.position;
-		const end = start.clone().add(direction.clone().multiplyScalar(range));
-		const hit = new CANNON.RaycastResult();
-		const options = { skipBackfaces: true, collisionFilterMask: ~2 };
-		return this.world.physicsWorld.raycastClosest(Utils.cannonVector(start), Utils.cannonVector(end), options, hit) ? hit : undefined;
-	}
-
-	private showPowerBeam(direction: THREE.Vector3, length: number, color: number): void
-	{
-		const start = this.world.camera.position.clone();
-		const end = start.clone().add(direction.multiplyScalar(length));
-		const geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
-		const beam = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
-		this.world.graphicsWorld.add(beam);
-		window.setTimeout(() =>
-		{
-			this.world.graphicsWorld.remove(beam);
-			geometry.dispose();
-			(beam.material as THREE.Material).dispose();
-		}, 120);
 	}
 
 	public hitByVehicle(vehicle: Vehicle): void
@@ -733,10 +613,6 @@ export class Character extends THREE.Object3D implements IWorldEntity
 			{
 				keys: ['V'],
 				desc: 'First-person view'
-			},
-			{
-				keys: ['Q', 'or', 'Left Click'],
-				desc: 'Use ' + this.superpower
 			},
 			{
 				keys: ['Shift', '+', 'R'],

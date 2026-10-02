@@ -11,6 +11,7 @@ import { Car } from '../vehicles/Car';
 import { PickupTruck } from '../vehicles/PickupTruck';
 import { Airplane } from '../vehicles/Airplane';
 import { Helicopter } from '../vehicles/Helicopter';
+import { Mech } from '../vehicles/Mech';
 import { LoadingManager } from './LoadingManager';
 
 interface OnlinePlayerState
@@ -27,7 +28,6 @@ interface OnlinePlayerState
 	moving?: boolean;
 	updatedAt: number;
 	color?: string;
-	superpower?: string;
 	moderator?: boolean;
 	vehicleId?: string;
 	seatName?: string;
@@ -125,7 +125,7 @@ export class OnlineMultiplayer
 		const object: any = this.localCharacter.controlledObject || occupiedSeat?.vehicle || this.localCharacter;
 		const position = object.collision === undefined ? object.position : object.collision.interpolatedPosition;
 		const quaternion = object.collision === undefined ? object.quaternion : object.collision.interpolatedQuaternion;
-		const vehicleType = object.userData.vehicleType || (object.entityType === 2 ? 'car' : object.entityType === 1 ? 'airplane' : object.entityType === 3 ? 'heli' : undefined);
+		const vehicleType = object.userData.vehicleType || (object.entityType === 2 ? 'car' : object.entityType === 1 ? 'airplane' : object.entityType === 3 ? 'heli' : object.entityType === 4 ? 'mech' : undefined);
 		const vehicleId = vehicleType !== undefined ? String(object.userData.networkId || object.spawnPoint?.name || object.uuid) : undefined;
 		const moving = vehicleType === undefined && position.distanceTo(this.lastLocalPosition) > 0.02;
 		this.lastLocalPosition.copy(position);
@@ -152,7 +152,6 @@ export class OnlineMultiplayer
 		state.frozen = this.freezeEveryone && !this.isModerator;
 		state.flying = this.localCharacter.isFlying;
 		state.speedBoost = this.localCharacter.moveSpeed > 4;
-		state.superpower = this.localCharacter.superpower;
 
 		this.playerRef.set(state).catch((error) => console.error('Online multiplayer update failed', error));
 	}
@@ -188,7 +187,6 @@ export class OnlineMultiplayer
 			remote.character.setPlayerName(state.name || 'Player');
 			remote.character.userData.playerName = state.name || 'Player';
 			remote.character.setModeratorSkin(isRemoteMod);
-			if (state.superpower !== undefined) remote.character.setSuperpower(state.superpower);
 			remote.character.isFlying = state.flying === true;
 			remote.character.moveSpeed = state.speedBoost === true ? 12 : 4;
 			if (state.kickAt !== undefined && state.kickAt > (remote.lastKickAt || 0))
@@ -249,7 +247,6 @@ export class OnlineMultiplayer
 
 			const character = new Character(model);
 			character.isRemote = true;
-			if (state.superpower !== undefined) character.setSuperpower(state.superpower);
 			character.setPhysicsEnabled(false);
 			character.position.set(state.x, state.y, state.z);
 			character.quaternion.set(state.qx, state.qy, state.qz, state.qw);
@@ -372,6 +369,7 @@ export class OnlineMultiplayer
 			case 'pickup': return new PickupTruck(model);
 			case 'airplane': return new Airplane(model);
 			case 'heli': return new Helicopter(model);
+			case 'mech': return new Mech(model);
 			default: return new Car(model);
 		}
 	}
