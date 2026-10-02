@@ -436,7 +436,9 @@ export class OnlineMultiplayer
 			'<button id="mod-fly">Fly</button>' +
 			'<button id="mod-freeze">Freeze everyone</button>' +
 			'<button id="mod-slow">Slow everyone</button>' +
-			'<button id="mod-speed">Speed boost</button></div>';
+			'<button id="mod-speed">Speed boost</button>' +
+			'<label class="mod-scale-label">Grow / Shrink</label>' +
+			'<input id="mod-scale" type="range" min="0.5" max="2" step="0.05" value="1" /></div>';
 		document.body.appendChild(menu);
 		this.moderatorMenu = menu;
 		this.centerCursor = document.createElement('div');
@@ -487,6 +489,50 @@ export class OnlineMultiplayer
 				}
 			}
 		};
+		(document.getElementById('mod-scale') as HTMLInputElement).oninput = (event) =>
+		{
+			const value = Number((event.target as HTMLInputElement).value || 1);
+			this.applyModeratorScale(value);
+		};
+		this.applyModeratorScale(1);
+	}
+
+	private applyModeratorScale(scale: number): void
+	{
+		const clamped = Math.min(2, Math.max(0.5, Number(scale) || 1));
+		if (this.localCharacter === undefined) return;
+		this.localCharacter.modelContainer.scale.setScalar(clamped);
+		this.localCharacter.moveSpeed = 4 * clamped;
+		if (this.localCharacter.characterCapsule?.body?.shapes !== undefined)
+		{
+			this.localCharacter.characterCapsule.body.shapes.forEach((shape: any) =>
+			{
+				if (shape instanceof CANNON.Sphere)
+				{
+					shape.radius = 0.25 * clamped;
+				}
+			});
+			this.localCharacter.characterCapsule.body.updateMassProperties();
+		}
+		const seatVehicle = this.localCharacter.occupyingSeat?.vehicle as any;
+		if (seatVehicle !== undefined && seatVehicle.modelContainer !== undefined)
+		{
+			seatVehicle.modelContainer.scale.setScalar(clamped);
+			seatVehicle.collision?.shapes?.forEach((shape: any) =>
+			{
+				if (shape instanceof CANNON.Box)
+				{
+					shape.halfExtents.x *= clamped;
+					shape.halfExtents.y *= clamped;
+					shape.halfExtents.z *= clamped;
+				}
+				else if (shape instanceof CANNON.Sphere)
+				{
+					shape.radius *= clamped;
+				}
+			});
+			seatVehicle.collision?.updateMassProperties?.();
+		}
 	}
 
 	private createChat(): void

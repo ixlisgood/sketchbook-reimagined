@@ -106,31 +106,15 @@ export class Scenario
 
 	public launch(loadingManager: LoadingManager, world: World): void
 	{
-		const hasMechSpawn = this.spawnPoints.some((sp: any) => sp.type === 'mech');
-		if (!hasMechSpawn)
+		const needsMechReplacement = !this.spawnPoints.some((sp: any) => sp.type === 'mech');
+		if (needsMechReplacement)
 		{
-			const mechSpawn = new VehicleSpawnPoint(new THREE.Object3D());
-			mechSpawn.type = 'mech';
-			mechSpawn.driver = 'player';
-
-			const spawnObject = new THREE.Object3D();
-			spawnObject.name = 'MechSpawn';
-			let referencePosition = new THREE.Vector3(0, 1.5, 0);
-			let foundReference = false;
-			this.rootNode.traverse((child: any) =>
+			const playerCarIndex = this.spawnPoints.findIndex((sp: any) => sp.type === 'car' && sp.driver === 'player');
+			if (playerCarIndex >= 0)
 			{
-				if (foundReference) return;
-				if (child.userData?.data === 'spawn' && (child.userData.type === 'car' || child.userData.type === 'airplane' || child.userData.type === 'heli'))
-				{
-					child.getWorldPosition(referencePosition);
-					referencePosition.y += 1;
-					referencePosition.z += 8;
-					foundReference = true;
-				}
-			});
-			spawnObject.position.copy(referencePosition);
-			(mechSpawn as any).object = spawnObject;
-			this.spawnPoints.push(mechSpawn);
+				(this.spawnPoints[playerCarIndex] as any).type = 'mech';
+				(this.spawnPoints[playerCarIndex] as any).driver = 'player';
+			}
 		}
 
 		this.spawnPoints.forEach((sp) => {

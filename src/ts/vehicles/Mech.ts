@@ -10,6 +10,8 @@ import { IControllable } from '../interfaces/IControllable';
 export class Mech extends Car implements IControllable
 {
 	public entityType: EntityType = EntityType.Mech;
+	public mixer: THREE.AnimationMixer;
+	public animations: any[];
 
 	private heldBody: CANNON.Body | undefined;
 	private pickupRange: number = 6;
@@ -22,10 +24,17 @@ export class Mech extends Car implements IControllable
 		this.actions['pickup'] = new KeyBinding('KeyE');
 		this.collision.mass = 120;
 		this.collision.updateMassProperties();
+		this.mixer = new THREE.AnimationMixer(gltf.scene);
+		this.animations = gltf.animations || [];
+		if (this.animations.length > 0)
+		{
+			this.mixer.clipAction(this.animations[0]).play();
+		}
 	}
 
 	public update(timeStep: number): void
 	{
+		if (this.mixer !== undefined) this.mixer.update(timeStep);
 		super.update(timeStep);
 
 		if (this.heldBody !== undefined && this.world !== undefined)

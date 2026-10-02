@@ -43,6 +43,7 @@ export declare class OnlineMultiplayer {
     private createVehicleVisual;
     private createLobbyMenu;
     private createModeratorMenu;
+    private applyModeratorScale;
     private createChat;
     private sendCommand;
     private applyCommand;

@@ -859,6 +859,7 @@ export class Character extends THREE.Object3D implements IWorldEntity
 	
 			vehicle.controllingCharacter = this;
 		}
+		this.modelContainer.visible = vehicle.entityType !== EntityType.Mech;
 	}
 
 	public transferControls(entity: IControllable): void
@@ -899,6 +900,7 @@ export class Character extends THREE.Object3D implements IWorldEntity
 			this.controlledObject = undefined;
 			this.inputReceiverInit();
 		}
+		this.modelContainer.visible = true;
 	}
 
 	public exitVehicle(): void
