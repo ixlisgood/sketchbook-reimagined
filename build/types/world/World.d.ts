@@ -58,6 +58,7 @@ export declare class World {
      * @param {World} world
      */
     render(world: World): void;
+    private stripBrokenRenderables;
     setTimeScale(value: number): void;
     add(worldEntity: IWorldEntity): void;
     registerUpdatable(registree: IUpdatable): void;

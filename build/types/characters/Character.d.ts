@@ -15,6 +15,7 @@ import { VehicleEntryInstance } from './VehicleEntryInstance';
 import { GroundImpactData } from './GroundImpactData';
 import { EntityType } from '../enums/EntityType';
 export declare class Character extends THREE.Object3D implements IWorldEntity {
+    static readonly superpowers: string[];
     updateOrder: number;
     entityType: EntityType;
     height: number;
@@ -62,13 +63,19 @@ export declare class Character extends THREE.Object3D implements IWorldEntity {
     isFlying: boolean;
     isSlowed: boolean;
     isFirstPerson: boolean;
+    superpower: string;
+    flingUntil: number;
     private playerNameLabel;
     private moderatorSkinEnabled;
     private physicsEnabled;
     private vehicleHitCooldown;
+    private powerCooldown;
+    private speedPowerTimer;
+    private heldBody;
     constructor(gltf: any);
     setAnimations(animations: []): void;
     setPlayerColor(color: string): void;
+    setSuperpower(power: string): void;
     setPlayerName(name: string): void;
     setModeratorSkin(enabled: boolean): void;
     setArcadeVelocityInfluence(x: number, y?: number, z?: number): void;
@@ -94,6 +101,9 @@ export declare class Character extends THREE.Object3D implements IWorldEntity {
     takeControl(): void;
     resetControls(): void;
     update(timeStep: number): void;
+    private activateSuperpower;
+    private raycastPowerTarget;
+    private showPowerBeam;
     hitByVehicle(vehicle: Vehicle): void;
     hitByFall(): void;
     applyTPose(): void;
