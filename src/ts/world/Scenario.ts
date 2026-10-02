@@ -115,7 +115,7 @@ export class Scenario
 
 			const spawnObject = new THREE.Object3D();
 			spawnObject.name = 'MechSpawn';
-			let referencePosition = new THREE.Vector3(0, 2, 0);
+			let referencePosition = new THREE.Vector3(0, 1.5, 0);
 			let foundReference = false;
 			this.rootNode.traverse((child: any) =>
 			{
@@ -123,10 +123,12 @@ export class Scenario
 				if (child.userData?.data === 'spawn' && (child.userData.type === 'car' || child.userData.type === 'airplane' || child.userData.type === 'heli'))
 				{
 					child.getWorldPosition(referencePosition);
+					referencePosition.y += 1;
+					referencePosition.z += 8;
 					foundReference = true;
 				}
 			});
-			spawnObject.position.copy(referencePosition.clone().add(new THREE.Vector3(0, 0, 8)));
+			spawnObject.position.copy(referencePosition);
 			(mechSpawn as any).object = spawnObject;
 			this.spawnPoints.push(mechSpawn);
 		}
