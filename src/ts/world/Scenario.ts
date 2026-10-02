@@ -106,14 +106,15 @@ export class Scenario
 
 	public launch(loadingManager: LoadingManager, world: World): void
 	{
-		const needsMechReplacement = !this.spawnPoints.some((sp: any) => sp.type === 'mech');
+		const needsMechReplacement = this.default && !this.spawnPoints.some((sp: any) => sp.type === 'mech');
 		if (needsMechReplacement)
 		{
-			const playerCarIndex = this.spawnPoints.findIndex((sp: any) => sp.type === 'car' && sp.driver === 'player');
-			if (playerCarIndex >= 0)
+			let carIndex = this.spawnPoints.findIndex((sp: any) => sp.type === 'car' && sp.driver === undefined);
+			if (carIndex < 0) carIndex = this.spawnPoints.findIndex((sp: any) => sp.type === 'car');
+			if (carIndex >= 0)
 			{
-				(this.spawnPoints[playerCarIndex] as any).type = 'mech';
-				(this.spawnPoints[playerCarIndex] as any).driver = 'player';
+				(this.spawnPoints[carIndex] as any).type = 'mech';
+				(this.spawnPoints[carIndex] as any).driver = undefined;
 			}
 		}
 

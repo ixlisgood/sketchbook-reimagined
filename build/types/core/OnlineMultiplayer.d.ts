@@ -6,6 +6,7 @@ export declare class OnlineMultiplayer {
     private static readonly roomName;
     private world;
     private database;
+    private auth;
     private playerRef;
     private playersRef;
     private controlRef;
@@ -30,6 +31,7 @@ export declare class OnlineMultiplayer {
     private chatPanel;
     private centerCursor;
     private currentTargetName;
+    private authStatus;
     constructor(world: World, loadingManager: LoadingManager);
     updateOrder: number;
     setLocalCharacter(character: Character): void;
@@ -42,6 +44,8 @@ export declare class OnlineMultiplayer {
     private attachRemoteCharacter;
     private createVehicleVisual;
     private createLobbyMenu;
+    private authenticate;
+    private updateAccountPanel;
     private createModeratorMenu;
     private applyModeratorScale;
     private createChat;
