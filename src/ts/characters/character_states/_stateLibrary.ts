@@ -18,3 +18,5 @@ export * from './StartWalkLeft';
 export * from './StartWalkRight';
 export * from './Walk';
 export * from './VehicleHit';
+export * from './Attack';
+export * from './Death';

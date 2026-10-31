@@ -6,12 +6,12 @@ import * as Utils from '../core/FunctionLibrary';
 import { KeyBinding } from '../core/KeyBinding';
 import { VectorSpringSimulator } from '../physics/spring_simulation/VectorSpringSimulator';
 import { RelativeSpringSimulator } from '../physics/spring_simulation/RelativeSpringSimulator';
-import { Idle } from './character_states/Idle';
-import { EnteringVehicle } from './character_states/vehicles/EnteringVehicle';
-import { ExitingVehicle } from './character_states/vehicles/ExitingVehicle';
-import { OpenVehicleDoor as OpenVehicleDoor } from './character_states/vehicles/OpenVehicleDoor';
-import { Driving } from './character_states/vehicles/Driving';
-import { ExitingAirplane } from './character_states/vehicles/ExitingAirplane';
+import { Idle } from '../character_states/Idle';
+import { EnteringVehicle } from '../character_states/vehicles/EnteringVehicle';
+import { ExitingVehicle } from '../character_states/vehicles/ExitingVehicle';
+import { OpenVehicleDoor as OpenVehicleDoor } from '../character_states/vehicles/OpenVehicleDoor';
+import { Driving } from '../character_states/vehicles/Driving';
+import { ExitingAirplane } from '../character_states/vehicles/ExitingAirplane';
 import { ICharacterAI } from '../interfaces/ICharacterAI';
 import { World } from '../world/World';
 import { IControllable } from '../interfaces/IControllable';
@@ -21,13 +21,15 @@ import { VehicleSeat } from '../vehicles/VehicleSeat';
 import { Vehicle } from '../vehicles/Vehicle';
 import { CollisionGroups } from '../enums/CollisionGroups';
 import { CapsuleCollider } from '../physics/colliders/CapsuleCollider';
-import { VehicleEntryInstance } from './VehicleEntryInstance';
+import { VehicleEntryInstance } from '../VehicleEntryInstance';
 import { SeatType } from '../enums/SeatType';
-import { GroundImpactData } from './GroundImpactData';
+import { GroundImpactData } from '../GroundImpactData';
 import { ClosestObjectFinder } from '../core/ClosestObjectFinder';
 import { Object3D } from 'three';
 import { EntityType } from '../enums/EntityType';
-import { VehicleHit } from './character_states/VehicleHit';
+import { VehicleHit } from '../character_states/VehicleHit';
+import { Attack } from '../character_states/Attack';
+import { Death } from '../character_states/Death';
 
 export class Character extends THREE.Object3D implements IWorldEntity
 {
@@ -94,6 +96,24 @@ export class Character extends THREE.Object3D implements IWorldEntity
 	
 	private physicsEnabled: boolean = true;
 	private vehicleHitCooldown: number = 0;
+
+	// Combat / Health system
+	public maxHealth: number = 100;
+	public health: number = 100;
+	public isDead: boolean = false;
+	public isAiming: boolean = false;
+	public lastAttackTime: number = 0;
+	public attackCooldown: number = 0.55; // seconds between attacks
+	public attackRange: number = 2.0;
+	public attackDamage: number = 25;
+	public tackleForce: number = 9;
+	public currentAnimName: string = 'idle'; // for network sync
+	private bloodSpatters: THREE.Mesh[] = [];
+	private healthBarElement: HTMLElement = null;
+	private aimCrosshair: HTMLElement = null;
+	// Optional callback used by OnlineMultiplayer to broadcast damage
+	public onDamageDealt: (victimId: string, amount: number) => void = null;
+	public networkId: string = ''; // set by OnlineMultiplayer for local / remote matching
 
 	constructor(gltf: any)
 	{
@@ -569,6 +589,7 @@ export class Character extends THREE.Object3D implements IWorldEntity
 		if (this.world !== undefined)
 		{
 			this.world.inputManager.setInputReceiver(this);
+			this.createHealthBar();
 		}
 		else
 		{
@@ -587,6 +608,21 @@ export class Character extends THREE.Object3D implements IWorldEntity
 
 	public update(timeStep: number): void
 	{
+		if (this.isDead)
+		{
+			// Keep animation mixer going but stop physics/input driven movement
+			if (this.mixer) this.mixer.update(timeStep);
+			if (this.characterCapsule) this.characterCapsule.body.velocity.set(0, this.characterCapsule.body.velocity.y, 0);
+			return;
+		}
+
+		// Continuously sync aim state from secondary (right mouse hold)
+		if (this.actions && this.actions.secondary)
+		{
+			const shouldAim = this.actions.secondary.isPressed === true;
+			if (shouldAim !== this.isAiming) this.setAiming(shouldAim);
+		}
+
 		this.vehicleHitCooldown = Math.max(0, this.vehicleHitCooldown - timeStep);
 		if (this.moderatorSkinEnabled && this.moderatorTrail !== undefined)
 		{
@@ -788,6 +824,7 @@ export class Character extends THREE.Object3D implements IWorldEntity
 				return 0;
 			}
 
+			this.currentAnimName = clipName;
 			this.mixer.stopAllAction();
 			action.fadeIn(fadeIn);
 			action.play();
@@ -1265,6 +1302,319 @@ export class Character extends THREE.Object3D implements IWorldEntity
 			// Remove visuals
 			world.graphicsWorld.remove(this);
 			world.graphicsWorld.remove(this.raycastBox);
+
+			// Clean up blood splatters belonging to this character
+			this.bloodSpatters.forEach(s => {
+				if (s.parent) s.parent.remove(s);
+			});
+			this.bloodSpatters = [];
+		}
+	}
+
+	/** Apply damage. Returns true if the character died from this hit. */
+	public takeDamage(amount: number, attacker: Character = null): boolean
+	{
+		if (this.isDead || this.isFrozen) return false;
+
+		this.health = Math.max(0, this.health - amount);
+		this.updateHealthBar();
+		this.spawnBloodSpatter();
+
+		if (this.health <= 0)
+		{
+			this.die(attacker);
+			return true;
+		}
+		return false;
+	}
+
+	public die(killer: Character = null): void
+	{
+		if (this.isDead) return;
+		this.isDead = true;
+		this.isAiming = false;
+		this.health = 0;
+		this.updateHealthBar();
+		this.updateAimCrosshair();
+
+		this.setArcadeVelocityTarget(0);
+		this.velocity.set(0, 0, 0);
+		if (this.characterCapsule) this.characterCapsule.body.velocity.set(0, 0, 0);
+
+		// Switch to Death state (handles animation + tilt)
+		this.setState(new Death(this));
+
+		console.log('Character died', killer ? 'killed by another player' : '');
+	}
+
+	public revive(): void
+	{
+		this.isDead = false;
+		this.health = this.maxHealth;
+		if (this.tiltContainer) this.tiltContainer.rotation.z = 0;
+		this.updateHealthBar();
+		this.setState(new Idle(this));
+	}
+
+	/**
+	 * Called from input when player presses attack while aiming.
+	 * Enters Attack state (animation) which then calls performMeleeHit().
+	 */
+	public tryAttack(): void
+	{
+		if (this.isDead || this.controlledObject || this.occupyingSeat) return;
+		if (!this.isAiming) return; // must be aiming – no auto / free fire
+
+		const now = performance.now() / 1000;
+		if (now - this.lastAttackTime < this.attackCooldown) return;
+		this.lastAttackTime = now;
+
+		this.setState(new Attack(this));
+	}
+
+	/**
+	 * Actual hit detection + damage + tackle physics.
+	 * Called by Attack state on enter.
+	 */
+	public performMeleeHit(): void
+	{
+		const direction = this.orientation.clone().normalize();
+		let closest: Character = null;
+		let closestDist = this.attackRange;
+
+		if (this.world && this.world.characters)
+		{
+			for (const other of this.world.characters)
+			{
+				if (other === this || other.isDead) continue;
+
+				const toOther = other.position.clone().sub(this.position);
+				const dist = toOther.length();
+				if (dist > this.attackRange || dist < 0.15) continue;
+
+				toOther.y = 0;
+				toOther.normalize();
+				const dot = direction.dot(toOther);
+				if (dot < 0.35) continue; // must be roughly in front
+
+				if (dist < closestDist)
+				{
+					closestDist = dist;
+					closest = other;
+				}
+			}
+		}
+
+		if (closest)
+		{
+			// Local damage application
+			closest.takeDamage(this.attackDamage, this);
+
+			// Network: notify multiplayer layer so other clients apply the same damage
+			if (this.onDamageDealt && closest.networkId)
+			{
+				this.onDamageDealt(closest.networkId, this.attackDamage);
+			}
+
+			// Tackle impulse (only if target has physics)
+			if (closest.characterCapsule && closest.characterCapsule.body && !closest.isRemote)
+			{
+				const pushDir = closest.position.clone().sub(this.position).normalize();
+				pushDir.y = 0.3;
+				const impulse = Utils.cannonVector(pushDir.multiplyScalar(this.tackleForce));
+				closest.characterCapsule.body.velocity.vadd(impulse, closest.characterCapsule.body.velocity);
+			}
+
+			// Small self knockback
+			if (this.characterCapsule)
+			{
+				const selfPush = direction.clone().multiplyScalar(-1.2);
+				this.characterCapsule.body.velocity.vadd(Utils.cannonVector(selfPush), this.characterCapsule.body.velocity);
+			}
+		}
+	}
+
+	/** Enter / exit aim mode (hold right mouse). */
+	public setAiming(aiming: boolean): void
+	{
+		if (this.isDead) aiming = false;
+		this.isAiming = aiming;
+		this.updateAimCrosshair();
+
+		if (aiming)
+		{
+			// Slightly slower move while aiming
+			this.moveSpeed = Math.min(this.moveSpeed, 2.8);
+		}
+		else if (!this.isSlowed)
+		{
+			this.moveSpeed = 4;
+		}
+	}
+
+	public spawnBloodSpatter(): void
+	{
+		if (!this.world) return;
+
+		const geo = new THREE.CircleGeometry(0.15 + Math.random() * 0.25, 8);
+		const mat = new THREE.MeshBasicMaterial({
+			color: 0x8b0000,
+			transparent: true,
+			opacity: 0.85,
+			side: THREE.DoubleSide,
+			depthWrite: false
+		});
+		const splat = new THREE.Mesh(geo, mat);
+		splat.rotation.x = -Math.PI / 2;
+		splat.position.copy(this.position);
+		splat.position.y += 0.02;
+		splat.position.x += (Math.random() - 0.5) * 0.4;
+		splat.position.z += (Math.random() - 0.5) * 0.4;
+
+		this.world.graphicsWorld.add(splat);
+		this.bloodSpatters.push(splat);
+
+		// Fade out and remove after a while
+		const start = performance.now();
+		const duration = 8000 + Math.random() * 4000;
+		const fade = () => {
+			const t = (performance.now() - start) / duration;
+			if (t >= 1)
+			{
+				if (splat.parent) splat.parent.remove(splat);
+				const idx = this.bloodSpatters.indexOf(splat);
+				if (idx >= 0) this.bloodSpatters.splice(idx, 1);
+				return;
+			}
+			mat.opacity = 0.85 * (1 - t);
+			requestAnimationFrame(fade);
+		};
+		requestAnimationFrame(fade);
+	}
+
+	public createHealthBar(): void
+	{
+		if (this.healthBarElement) return;
+
+		const bar = document.createElement('div');
+		bar.id = 'player-health-bar';
+		bar.style.cssText = `
+			position: fixed;
+			bottom: 30px;
+			left: 50%;
+			transform: translateX(-50%);
+			width: 260px;
+			height: 22px;
+			background: rgba(0,0,0,0.6);
+			border: 2px solid #222;
+			border-radius: 6px;
+			overflow: hidden;
+			z-index: 1000;
+			pointer-events: none;
+			box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+		`;
+
+		const fill = document.createElement('div');
+		fill.id = 'player-health-fill';
+		fill.style.cssText = `
+			width: 100%;
+			height: 100%;
+			background: linear-gradient(90deg, #c0392b, #e74c3c);
+			transition: width 0.2s ease, background 0.3s;
+		`;
+
+		const label = document.createElement('div');
+		label.id = 'player-health-label';
+		label.style.cssText = `
+			position: absolute;
+			top: 0; left: 0; right: 0; bottom: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			color: white;
+			font-family: Arial, sans-serif;
+			font-size: 12px;
+			font-weight: bold;
+			text-shadow: 0 1px 2px #000;
+		`;
+		label.textContent = '100 / 100';
+
+		bar.appendChild(fill);
+		bar.appendChild(label);
+		document.body.appendChild(bar);
+
+		this.healthBarElement = bar;
+		this.updateHealthBar();
+		this.createAimCrosshair();
+	}
+
+	public updateHealthBar(): void
+	{
+		if (!this.healthBarElement) return;
+
+		const fill = document.getElementById('player-health-fill');
+		const label = document.getElementById('player-health-label');
+		if (!fill || !label) return;
+
+		const pct = Math.max(0, Math.min(100, (this.health / this.maxHealth) * 100));
+		fill.style.width = pct + '%';
+
+		if (pct > 60) fill.style.background = 'linear-gradient(90deg, #27ae60, #2ecc71)';
+		else if (pct > 30) fill.style.background = 'linear-gradient(90deg, #f39c12, #f1c40f)';
+		else fill.style.background = 'linear-gradient(90deg, #c0392b, #e74c3c)';
+
+		label.textContent = Math.ceil(this.health) + ' / ' + this.maxHealth;
+
+		if (this.isDead)
+		{
+			label.textContent = 'DEAD';
+			fill.style.width = '0%';
+		}
+	}
+
+	public createAimCrosshair(): void
+	{
+		if (this.aimCrosshair) return;
+
+		const el = document.createElement('div');
+		el.id = 'aim-crosshair';
+		el.style.cssText = `
+			position: fixed;
+			top: 50%;
+			left: 50%;
+			width: 18px;
+			height: 18px;
+			margin: -9px 0 0 -9px;
+			border: 2px solid rgba(255,255,255,0.85);
+			border-radius: 50%;
+			box-shadow: 0 0 4px #000, inset 0 0 2px #000;
+			pointer-events: none;
+			z-index: 999;
+			display: none;
+			opacity: 0.9;
+		`;
+		// center dot
+		const dot = document.createElement('div');
+		dot.style.cssText = `
+			position: absolute;
+			top: 50%; left: 50%;
+			width: 3px; height: 3px;
+			margin: -1.5px 0 0 -1.5px;
+			background: #fff;
+			border-radius: 50%;
+			box-shadow: 0 0 2px #000;
+		`;
+		el.appendChild(dot);
+		document.body.appendChild(el);
+		this.aimCrosshair = el;
+	}
+
+	public updateAimCrosshair(): void
+	{
+		if (!this.aimCrosshair) this.createAimCrosshair();
+		if (this.aimCrosshair)
+		{
+			this.aimCrosshair.style.display = (this.isAiming && !this.isDead) ? 'block' : 'none';
 		}
 	}
 }

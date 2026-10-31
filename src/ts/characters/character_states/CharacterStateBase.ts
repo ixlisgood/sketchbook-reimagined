@@ -53,6 +53,24 @@ export abstract class CharacterStateBase implements ICharacterState
 
 	public onInputChange(): void
 	{
+		if (this.character.isDead) return;
+
+		// Aim mode – hold right mouse (secondary)
+		if (this.character.actions.secondary)
+		{
+			const aiming = this.character.actions.secondary.isPressed;
+			if (aiming !== this.character.isAiming)
+			{
+				this.character.setAiming(aiming);
+			}
+		}
+
+		// Melee attack / tackle on left mouse (primary) – only while aiming (no auto fire)
+		if (this.character.actions.primary && this.character.actions.primary.justPressed)
+		{
+			this.character.tryAttack();
+		}
+
 		if (this.canFindVehiclesToEnter && this.character.actions.enter.justPressed)
 		{
 			this.character.findVehicleToEnter(true);

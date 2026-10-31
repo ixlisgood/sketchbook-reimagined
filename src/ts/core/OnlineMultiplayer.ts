@@ -34,6 +34,11 @@ interface OnlinePlayerState
 	frozen?: boolean;
 	flying?: boolean;
 	speedBoost?: boolean;
+	// Combat
+	health?: number;
+	isDead?: boolean;
+	anim?: string;
+	aiming?: boolean;
 }
 
 interface RemotePlayer
@@ -109,6 +114,13 @@ export class OnlineMultiplayer
 		character.setPlayerColor(this.playerColor);
 		character.setPlayerName(this.playerName || 'Player');
 		if (this.isModerator) character.setModeratorSkin(true);
+
+		// Network identity + damage callback for online combat
+		character.networkId = this.playerId || '';
+		character.onDamageDealt = (victimId: string, amount: number) =>
+		{
+			this.publishDamageEvent(victimId, amount);
+		};
 	}
 
 	public update(timeStep: number): void
@@ -152,6 +164,12 @@ export class OnlineMultiplayer
 		state.flying = this.localCharacter.isFlying;
 		state.speedBoost = this.localCharacter.moveSpeed > 4;
 
+		// Combat sync
+		state.health = this.localCharacter.health;
+		state.isDead = this.localCharacter.isDead;
+		state.anim = this.localCharacter.currentAnimName || (state.moving ? 'run' : 'idle');
+		state.aiming = this.localCharacter.isAiming === true;
+
 		this.playerRef.set(state).catch((error) => console.error('Online multiplayer update failed', error));
 	}
 
@@ -188,6 +206,24 @@ export class OnlineMultiplayer
 			remote.character.setModeratorSkin(isRemoteMod);
 			remote.character.isFlying = state.flying === true;
 			remote.character.moveSpeed = state.speedBoost === true ? 12 : 4;
+
+			// Combat state from network
+			if (typeof state.health === 'number') remote.character.health = state.health;
+			if (state.isDead === true && !remote.character.isDead)
+			{
+				remote.character.die();
+			}
+			else if (state.isDead === false && remote.character.isDead)
+			{
+				remote.character.revive();
+			}
+			if (state.anim && remote.animation !== state.anim)
+			{
+				this.setRemoteAnimation(remote, state.anim);
+			}
+			remote.character.isAiming = state.aiming === true;
+			remote.character.networkId = id;
+
 			if (state.kickAt !== undefined && state.kickAt > (remote.lastKickAt || 0))
 			{
 				remote.lastKickAt = state.kickAt;
@@ -246,6 +282,7 @@ export class OnlineMultiplayer
 
 			const character = new Character(model);
 			character.isRemote = true;
+			character.networkId = id;
 			character.setPhysicsEnabled(false);
 			character.position.set(state.x, state.y, state.z);
 			character.quaternion.set(state.qx, state.qy, state.qz, state.qw);
@@ -254,8 +291,10 @@ export class OnlineMultiplayer
 			character.setPlayerName(state.name || 'Player');
 			character.userData.playerName = state.name || 'Player';
 			character.setModeratorSkin(state.moderator === true);
+			if (typeof state.health === 'number') character.health = state.health;
+			if (state.isDead) character.die();
 			this.remotePlayers[id] = { character, color: state.color, lastSeen: Date.now() };
-			this.setRemoteAnimation(this.remotePlayers[id], state.vehicleType !== undefined ? 'driving' : state.moving === true ? 'run' : 'idle');
+			this.setRemoteAnimation(this.remotePlayers[id], state.anim || (state.vehicleType !== undefined ? 'driving' : state.moving === true ? 'run' : 'idle'));
 		});
 	}
 
@@ -604,9 +643,55 @@ export class OnlineMultiplayer
 			container.innerHTML = messages.map((message) => '<div><strong>' + message.name + ':</strong> ' + message.text + '</div>').join('');
 			container.scrollTop = container.scrollHeight;
 		});
+
+		// Combat damage events (attacker writes, everyone applies)
+		const damageRef = lobbyRef.child('damageEvents');
+		damageRef.on('child_added', (snapshot) =>
+		{
+			const evt = snapshot.val();
+			if (!evt || !evt.to || typeof evt.amount !== 'number') return;
+			// Ignore very old events
+			if (evt.ts && Date.now() - evt.ts > 4000) return;
+
+			// Apply to local player if we are the target
+			if (evt.to === this.playerId && this.localCharacter && !this.localCharacter.isDead)
+			{
+				this.localCharacter.takeDamage(evt.amount);
+			}
+			// Also apply visually to remote if present (blood + health number)
+			const remote = this.remotePlayers[evt.to];
+			if (remote && remote.character && !remote.character.isDead)
+			{
+				remote.character.takeDamage(evt.amount);
+			}
+		});
+
+		// Make sure local character has network id + damage callback after join
+		if (this.localCharacter)
+		{
+			this.localCharacter.networkId = this.playerId;
+			this.localCharacter.onDamageDealt = (victimId: string, amount: number) =>
+			{
+				this.publishDamageEvent(victimId, amount);
+			};
+		}
+
 		lobbyRef.child('lastActive').set(firebase.database.ServerValue.TIMESTAMP);
 		this.lobbyMenu.style.display = 'none';
 		this.moderatorMenu.style.display = this.isModerator ? 'block' : 'none';
 		this.centerCursor.style.display = this.isModerator ? 'block' : 'none';
+	}
+
+	/** Broadcast a damage event so all clients apply the same hit. */
+	private publishDamageEvent(victimId: string, amount: number): void
+	{
+		if (!this.lobbyId || !this.playerId || !victimId) return;
+		const damageRef = this.database.ref(OnlineMultiplayer.roomName + '/lobbies/' + this.lobbyId + '/damageEvents');
+		damageRef.push({
+			from: this.playerId,
+			to: victimId,
+			amount: amount,
+			ts: Date.now()
+		}).catch((err) => console.error('Failed to publish damage', err));
 	}
 }
